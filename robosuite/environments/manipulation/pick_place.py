@@ -544,6 +544,22 @@ class PickPlace(SingleArmEnv):
         """
         observables = super()._setup_observables()
 
+        pf = self.robots[0].robot_model.naming_prefix
+
+        # ======== CUSTOM modification start ========  
+
+        # Added contact force observations
+        @sensor(modality=f"{pf}proprio")
+        def eef_force(obs_cache):
+            return self.robots[0].ee_force
+
+        sensors = [eef_force]
+        names = [f"{pf}eef_force"]
+        enableds = [True]
+        actives = [True]
+
+        # ======== CUSTOM modification end ========
+
         # low-level object information
         if self.use_object_obs:
             # Get robot prefix and define observables modality
@@ -558,10 +574,21 @@ class PickPlace(SingleArmEnv):
             def world_pose_in_gripper(obs_cache):
                 return T.pose_inv(T.pose2mat((obs_cache[f"{pf}eef_pos"], obs_cache[f"{pf}eef_quat"]))) if\
                     f"{pf}eef_pos" in obs_cache and f"{pf}eef_quat" in obs_cache else np.eye(4)
-            sensors = [world_pose_in_gripper]
-            names = ["world_pose_in_gripper"]
-            enableds = [True]
-            actives = [False]
+            
+            
+            # ======== CUSTOM modification start ========  
+
+            # sensors = [world_pose_in_gripper]
+            # names = ["world_pose_in_gripper"]
+            # enableds = [True]
+            # actives = [False]
+
+            sensors.append(world_pose_in_gripper)
+            names.append("world_pose_in_gripper")
+            enableds.append(True)
+            actives.append(False)
+
+            # ======== CUSTOM modification end ========
 
             for i, obj in enumerate(self.objects):
                 # Create object sensors
