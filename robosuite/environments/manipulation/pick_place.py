@@ -1,3 +1,4 @@
+from ast import mod
 from collections import OrderedDict
 import random
 import numpy as np
@@ -557,6 +558,28 @@ class PickPlace(SingleArmEnv):
         names = [f"{pf}eef_force"]
         enableds = [True]
         actives = [True]
+
+        @sensor(modality=f"{pf}proprio")
+        def is_grasping(obs_cache):
+            # filter out objects that are already in the correct bins
+            active_objs = []
+            for i, obj in enumerate(self.objects):
+                if self.objects_in_bins[i]:
+                    continue
+                active_objs.append(obj)
+
+            # grasping reward for touching any objects of interest
+            if self._check_grasp(
+                gripper=self.robots[0].gripper,
+                object_geoms=[g for active_obj in active_objs for g in active_obj.contact_geoms]):
+                return 1
+            else:
+                return 0
+
+        sensors.append(is_grasping)
+        names.append(f"{pf}eef_is_grasping")
+        enableds.append(True)
+        actives.append(True)
 
         # ======== CUSTOM modification end ========
 

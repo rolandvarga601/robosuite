@@ -1,0 +1,9 @@
+python robosuite/demos/demo_device_control.py --environment PickPlaceCan --robots Sawyer --controller osc
+
+python scripts/collect_human_demonstrations.py --environment PickPlaceCan --robots Sawyer --directory ./models/assets/demonstrations/
+
+python scripts/playback_demonstrations_from_hdf5.py --folder ./models/assets/demonstrations/SawyerPickAndPlace/
+
+1654789794_9448006
+
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libGLEW.so
