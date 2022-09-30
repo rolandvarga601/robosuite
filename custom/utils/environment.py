@@ -1,10 +1,12 @@
+from tabnanny import check
 import robosuite as suite
 from robosuite.wrappers import GymWrapper
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.env_utils as EnvUtils
+from gym import Env
 
 
-def setup_environment():
+def setup_environment(encoder=None):
 
     # Create dict to hold options that will be passed to env creation call
     options = {}
@@ -70,8 +72,12 @@ def setup_environment():
             env_meta=env_meta,
             render=True,
             render_offscreen=False,
-        ).env
+        ).env, 
+        keys=[key.replace('object', 'object-state') for key in list(encoder.obs_key_shapes.keys())]
     )
+
+    assert isinstance(env, Env)
+
     env.reset()
     env.render()
 

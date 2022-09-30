@@ -45,11 +45,13 @@ class MLPQFunction(nn.Module):
 
 class MLPActorCritic(nn.Module):
 
-    def __init__(self, observation_space, action_space, hidden_sizes=(256,256),
+    # def __init__(self, observation_space, action_space, hidden_sizes=(256,256),
+    #              activation=nn.ReLU):
+    def __init__(self, obs_dim, action_space, hidden_sizes=(256,256),
                  activation=nn.ReLU):
         super().__init__()
 
-        obs_dim = observation_space.shape[0]
+        # obs_dim = observation_space.shape[0]
         act_dim = action_space.shape[0]
         act_limit = action_space.high[0]
 

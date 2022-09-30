@@ -1,5 +1,80 @@
 import numpy as np
+from robomimic.utils.dataset import SequenceDataset
+from torch.utils.data import DataLoader
 
+
+def get_data_loader(dataset_path, seq_length=1):
+    """
+    Get the dataset from hdf5 file
+    Args:
+        dataset_path (str): path to the dataset hdf5
+    """
+    dataset = SequenceDataset(
+        hdf5_path=dataset_path,
+        obs_keys=(                      # observations we want to appear in batches
+            "robot0_eef_force",
+            "robot0_eef_pos", 
+            "robot0_eef_quat",
+            "robot0_eef_vel_ang",
+            "robot0_eef_vel_lin",
+            "robot0_gripper_qpos",
+            "robot0_gripper_qvel", 
+            "object",
+        ),
+        dataset_keys=(                  # can optionally specify more keys here if they should appear in batches
+            "actions", 
+            "rewards", 
+            "dones",
+        ),
+        load_next_obs=True,
+        frame_stack=1,
+        seq_length=seq_length,                  # length-seq_length temporal sequences
+        pad_frame_stack=True,
+        pad_seq_length=True,            # pad last obs per trajectory to ensure all sequences are sampled
+        get_pad_mask=False,
+        goal_mode=None,
+        hdf5_cache_mode="low_dim",          # cache everything from dataset except images in memory to avoid repeated file i/o
+        hdf5_use_swmr=True,
+        hdf5_normalize_obs=False,
+        filter_by_attribute=None,       # can optionally provide a filter key here
+    )
+    print("\n============= Created Dataset =============")
+    print(dataset)
+    print("")
+
+    data_loader = DataLoader(
+        dataset=dataset,
+        sampler=None,       # no custom sampling logic (uniform sampling)
+        # sampler=SequentialSampler(dataset),       # no custom sampling logic (uniform sampling)
+        batch_size=dataset.total_num_sequences,     # batches of size 100
+        shuffle=False,
+        num_workers=0,
+        drop_last=True      # don't provide last batch in dataset pass if it's less than 100 in size
+    )
+
+    return data_loader
+
+# Print iterations progress
+def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█', printEnd = "\r"):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        length      - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+        printEnd    - Optional  : end character (e.g. "\r", "\r\n") (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filledLength = int(length * iteration // total)
+    bar = fill * filledLength + '-' * (length - filledLength)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end = printEnd)
+    # Print New Line on Complete
+    if iteration == total: 
+        print()
 
 def rollout(
         env,

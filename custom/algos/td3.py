@@ -9,6 +9,10 @@ import algos.td3_core as core
 # from spinup.utils.logx import EpochLogger
 import os
 import h5py
+from utils.training import printProgressBar
+from utils.training import get_data_loader
+from utils.encoding import encode_obs
+import robomimic.utils.tensor_utils as TensorUtils
 
 
 class ReplayBuffer:
@@ -16,7 +20,7 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for TD3 agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size, expert_data_path=None):
+    def __init__(self, obs_dim, act_dim, size, expert_data_path=None, encoder=None):
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
@@ -25,31 +29,83 @@ class ReplayBuffer:
         self.ptr, self.size, self.max_size = 0, 0, size
 
         if expert_data_path is not None:
+            print("Loading the expert demonstration data into the replay buffer...")
             assert os.path.exists(expert_data_path)
 
-            with h5py.File(expert_data_path, 'r') as f:
-                demos = list(f["data"].keys())
+            data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1)
 
-                # Get dataset length and check if it fits the experience buffer
-                assert (len(demos) <= size), f"The demonstrations (size: {len(demos)}) cannot be fit into the replay buffer (size: {size})"
+            data_loader_iterator = iter(data_loader)
 
-                obs_data = {}
-                for ep in demos:
-                    ep_length = f["data/{}".format(ep)].attrs["num_samples"]
-                    for k in range(ep_length):
-                        obs_list = [f["data/{}/obs/{}".format(ep, obs_signal)][k] for obs_signal in f["data/{}/obs".format(ep)].keys()]
-                        obs = np.hstack(obs_list)
+            # dataset.hdf5_cache['demo_0']['obs']
+
+            batch = next(data_loader_iterator)
+            actions_batch = batch['actions'].numpy()
+            dones_batch = batch['dones'].numpy()
+            rewards_batch = batch['rewards'].numpy()
+
+            actions_batch = np.squeeze(actions_batch)
+            dones_batch = np.squeeze(dones_batch)
+            rewards_batch = np.squeeze(rewards_batch)
+            
+            input_batch = dict()
+            input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
+            batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
+            latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
+
+            input_batch = dict()
+            input_batch["next_obs"] = {k: batch["next_obs"][k][:, 0, :] for k in batch["next_obs"]}
+            batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
+            latent_next_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['next_obs'])['mean']
+
+            obs_batch = latent_obs.cpu().detach().numpy()
+            next_obs_batch = latent_next_obs.cpu().detach().numpy()
+
+            self.store_demonstration(obs_batch=obs_batch, 
+                                    act_batch=actions_batch,
+                                    rew_batch=rewards_batch,
+                                    next_obs_batch=next_obs_batch,
+                                    done_batch=dones_batch)
+
+
+            # with h5py.File(expert_data_path, 'r') as f:
+            #     demos = list(f["data"].keys())
+
+            #     # Get dataset length and check if it fits the experience buffer
+            #     assert (len(demos) <= size), f"The demonstrations (size: {len(demos)}) cannot be fit into the replay buffer (size: {size})"
+
+            #     iteration = 0
+            #     total = len(demos)
+            #     printProgressBar(iteration, total, prefix = 'Loading demonstration:', suffix = 'Complete', length = 100)
+            #     for ep in demos:
+            #         ep_length = f["data/{}".format(ep)].attrs["num_samples"]
+            #         for k in range(ep_length):
+            #             obs_list = [f["data/{}/obs/{}".format(ep, obs_signal)][k] for obs_signal in f["data/{}/obs".format(ep)].keys()]
+            #             obs = np.hstack(obs_list)
                             
-                        next_obs_list = [f["data/{}/next_obs/{}".format(ep, obs_signal)][k] for obs_signal in f["data/{}/next_obs".format(ep)].keys()]
-                        next_obs = np.hstack(next_obs_list)
+            #             next_obs_list = [f["data/{}/next_obs/{}".format(ep, obs_signal)][k] for obs_signal in f["data/{}/next_obs".format(ep)].keys()]
+            #             next_obs = np.hstack(next_obs_list)
 
-                        act = f["data/{}/actions".format(ep)][k]
+            #             if encoder is not None:
+            #                 obs = encoder.nets["policy"].forward(inputs=obs,
+            #                                                     outputs=obs,
+            #                                                     freeze_encoder=True,)["encoder_z"]
 
-                        rew = f["data/{}/rewards".format(ep)][k]
+            #                 obs_next = encoder.nets["policy"].forward(inputs=obs_next,
+            #                                                             outputs=obs_next,
+            #                                                             freeze_encoder=True,)["encoder_z"]
 
-                        done = f["data/{}/dones".format(ep)][k]
+            #             act = f["data/{}/actions".format(ep)][k]
 
-                        self.store(obs=obs, act=act, rew=rew, next_obs=next_obs, done=done)
+            #             rew = f["data/{}/rewards".format(ep)][k]
+
+            #             done = f["data/{}/dones".format(ep)][k]
+
+            #             self.store(obs=obs, act=act, rew=rew, next_obs=next_obs, done=done)
+
+            #         printProgressBar(iteration+1, total, prefix = 'Loading demonstration:', suffix = 'Complete', length = 100)
+            #         iteration = iteration + 1
+
+            print("Demonstration loading is done")
 
 
     def store(self, obs, act, rew, next_obs, done):
@@ -60,6 +116,20 @@ class ReplayBuffer:
         self.done_buf[self.ptr] = done
         self.ptr = (self.ptr+1) % self.max_size
         self.size = min(self.size+1, self.max_size)
+
+    def store_demonstration(self, obs_batch, act_batch, rew_batch, next_obs_batch, done_batch):
+        batch_size = obs_batch.shape[0]
+
+        assert (batch_size <= self.max_size), f"The demonstrations (size: {batch_size}) cannot be fit into the replay buffer (size: {self.max_size})"
+
+        self.obs_buf[0:batch_size] = obs_batch
+        self.obs2_buf[0:batch_size] = next_obs_batch
+        self.act_buf[0:batch_size] = act_batch
+        self.rew_buf[0:batch_size] = rew_batch
+        self.done_buf[0:batch_size] = done_batch
+        self.ptr = batch_size
+        self.size = batch_size
+        
 
     def sample_batch(self, batch_size=32):
         idxs = np.random.randint(0, self.size, size=batch_size)
@@ -77,7 +147,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, 
         update_after=1000, update_every=50, act_noise=0.1, target_noise=0.2, 
         noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
-        logger_kwargs=dict(), save_freq=1):
+        logger_kwargs=dict(), save_freq=1, pretrain_on_demonstration=False,
+        pretrain_steps=10, encoder=None):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
     Args:
@@ -154,18 +225,29 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    o = env.reset()
+
+    if encoder is not None:
+        o = encode_obs(encoder=encoder, obs=o)
+
     print("Creating experience collector and test environment")
 
     # env, test_env = env_fn(), env_fn()
     # env, test_env = env_fn, env_fn
-    obs_dim = env.observation_space.shape
+
+    if encoder is not None:
+        obs_dim = encoder.algo_config.vae["latent_dim"]
+    else:
+        obs_dim = env.observation_space.shape
+    
     act_dim = env.action_space.shape[0]
 
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
     act_limit = env.action_space.high[0]
 
     # Create actor-critic module and target networks
-    ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
+    ac = actor_critic(obs_dim, env.action_space, **ac_kwargs)
+    # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
     ac_targ = deepcopy(ac)
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
@@ -177,7 +259,11 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Experience buffer
     # replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size, expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5')
+    replay_buffer = ReplayBuffer(obs_dim=obs_dim, 
+        act_dim=act_dim, 
+        size=replay_size, 
+        expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5',
+        encoder=encoder)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
@@ -280,6 +366,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             # o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
             o, d, ep_ret, ep_len = env.reset(), False, 0, 0
 
+            if encoder is not None:
+                o = encode_obs(encoder=encoder, obs=o)
+
             env.render()
 
             while not(d or (ep_len == max_ep_len)):
@@ -289,10 +378,21 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 ep_ret += r
                 ep_len += 1
 
+                if encoder is not None:
+                    o = encode_obs(encoder=encoder, obs=o)
+
                 env.render()
 
             # logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
             print(f"Episode return after test: {ep_ret}")
+
+    
+    if pretrain_on_demonstration:
+        print("Pretraining on the demonstration data")
+        for i in range(pretrain_steps):
+            batch = replay_buffer.sample_batch(batch_size)
+            update(data=batch, timer=0)
+        
 
     print("Prepare for interaction with the environment")
 
@@ -300,6 +400,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     o, ep_ret, ep_len = env.reset(), 0, 0
+
+    if encoder is not None:
+        o = encode_obs(encoder=encoder, obs=o)
 
     env.render()
 
@@ -318,6 +421,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         o2, r, d, _ = env.step(a)
         ep_ret += r
         ep_len += 1
+
+        if encoder is not None:
+            o2 = encode_obs(encoder=encoder, obs=o2)
 
         env.render()
 
@@ -340,6 +446,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             o, ep_ret, ep_len = env.reset(), 0, 0
 
+            if encoder is not None:
+                o = encode_obs(encoder=encoder, obs=o)
+
         # Update handling
         if t >= update_after and t % update_every == 0:
             for j in range(update_every):
@@ -348,6 +457,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # End of epoch handling
         if (t+1) % steps_per_epoch == 0:
+            print(f"The size of data in the replay buffer: {replay_buffer.size}/{replay_buffer.max_size}")
             epoch = (t+1) // steps_per_epoch
 
             # Save model
