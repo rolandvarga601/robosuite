@@ -28,14 +28,31 @@ from algos.agent import RandomAgent
 from utils.training import rollout
 from algos.td3 import td3
 from utils.encoding import load_observer
+import os
+from utils.training import get_data_loader
 
 if __name__ == "__main__":
 
-    encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch199.pth")
+    encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch99.pth")
     encoder.set_eval()
 
-    # Setup environment with hardcoded parameters
-    env = setup_environment(encoder=encoder)
+    expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5'
+
+    print("Loading the expert demonstration data into the replay buffer...")
+    assert os.path.exists(expert_data_path)
+
+    render = False
+
+    # Setup environment based on the dataset
+    env = setup_environment(encoder=encoder, hdf5_path=expert_data_path, render=render)
+
+    data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1, normalize_obs=True)
+
+    obs_normalization_stats = data_loader.dataset.get_obs_normalization_stats()
+
+    data_loader_iterator = iter(data_loader)
+
+    demo_data = next(data_loader_iterator)
 
     print("Environment set up")
 
@@ -43,16 +60,28 @@ if __name__ == "__main__":
     # td3(setup_environment, max_ep_len=100)
     td3(env, 
         max_ep_len=200, 
-        epochs=100,
-        start_steps=0,
+        epochs=50,
+        start_steps=200,
         steps_per_epoch=1000,
-        update_after=1000, 
+        ac_kwargs=dict(hidden_sizes=[400, 300]),
+        update_after=200, 
         num_test_episodes=1, 
         replay_size=int(1e6), 
         pretrain_on_demonstration=True, 
-        pretrain_steps=40000,
+        pretrain_steps=10,
         encoder=encoder,
-        batch_size=120)
+        # batch_size=400,
+        batch_size=800,
+        force_scale=None,
+        expert_data=demo_data,
+        obs_normalization_stats=obs_normalization_stats,
+        # pi_lr=1e-3,
+        # q_lr=1e-5,
+        pi_lr=1e-4,
+        q_lr=1e-5,
+        noise_clip=0.1,
+        policy_delay=10,
+        render=render)
 
     print("Starting rollout")
 

@@ -1,5 +1,8 @@
+# Modified code based on the OpenAI Spinningup repository: https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/td3/td3.py
+
 from copy import deepcopy
 import itertools
+from typing import Dict
 import numpy as np
 import torch
 from torch.optim import Adam
@@ -13,6 +16,11 @@ from utils.training import printProgressBar
 from utils.training import get_data_loader
 from utils.encoding import encode_obs
 import robomimic.utils.tensor_utils as TensorUtils
+import robomimic.utils.obs_utils as ObsUtils
+
+from utils.logger import MyLogger
+
+import imageio
 
 
 class ReplayBuffer:
@@ -20,7 +28,8 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for TD3 agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size, expert_data_path=None, encoder=None):
+    def __init__(self, obs_dim, act_dim, size, expert_data=None, encoder=None, obs_normalization_stats=None):
+
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
@@ -28,32 +37,56 @@ class ReplayBuffer:
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
 
-        if expert_data_path is not None:
-            print("Loading the expert demonstration data into the replay buffer...")
-            assert os.path.exists(expert_data_path)
-
-            data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1)
-
-            data_loader_iterator = iter(data_loader)
-
-            # dataset.hdf5_cache['demo_0']['obs']
-
-            batch = next(data_loader_iterator)
-            actions_batch = batch['actions'].numpy()
-            dones_batch = batch['dones'].numpy()
-            rewards_batch = batch['rewards'].numpy()
+        if expert_data is not None:
+            actions_batch = expert_data['actions'].numpy()
+            dones_batch = expert_data['dones'].numpy()
+            rewards_batch = expert_data['rewards'].numpy()
 
             actions_batch = np.squeeze(actions_batch)
             dones_batch = np.squeeze(dones_batch)
             rewards_batch = np.squeeze(rewards_batch)
             
-            input_batch = dict()
-            input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
+            # if obs_normalization_stats is not None:
+            #     print("Normalizing demonstration data observations...")
+            #     obs_norms = []
+            #     next_obs_norms = []
+            #     for k in range(actions_batch.shape[0]):
+            #         obs_dict = {key: torch.unsqueeze(expert_data["obs"][key][k, 0, :], 0) for key in expert_data["obs"]}
+            #         next_obs_dict = {key: torch.unsqueeze(expert_data["next_obs"][key][k, 0, :], 0) for key in expert_data["next_obs"]}
+
+            #         obs_norms.append(ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats))
+            #         next_obs_norms.append(ObsUtils.normalize_obs(obs_dict=next_obs_dict, obs_normalization_stats=obs_normalization_stats))
+                
+            #     expert_data["obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
+            #     expert_data["next_obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
+
+            # input_batch = dict()
+            # input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
+
+            print("Encoding demonstration data observations...")
+
+            input_batch = encoder.process_batch_for_training(expert_data)
+
+            # if force_scale != None:
+            #     input_batch['obs']['robot0_eef_force'] = input_batch['obs']['robot0_eef_force']*force_scale
+
             batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
             latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
 
+            # if obs_normalization_stats is not None:
+            #     obs_norms = []
+            #     for k in range(actions_batch.shape[0]):
+            #         obs_dict = {key: torch.unsqueeze(expert_data["next_obs"][key][k, 0, :], 0) for key in expert_data["next_obs"]}
+            #         obs_norms.append(ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats))
+                
+            #     expert_data["next_obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
+
             input_batch = dict()
-            input_batch["next_obs"] = {k: batch["next_obs"][k][:, 0, :] for k in batch["next_obs"]}
+            input_batch["next_obs"] = {k: expert_data["next_obs"][k][:, 0, :] for k in expert_data["next_obs"]}
+
+            # if force_scale != None:
+            #     input_batch['next_obs']['robot0_eef_force'] = input_batch['next_obs']['robot0_eef_force']*force_scale
+
             batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
             latent_next_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['next_obs'])['mean']
 
@@ -65,45 +98,6 @@ class ReplayBuffer:
                                     rew_batch=rewards_batch,
                                     next_obs_batch=next_obs_batch,
                                     done_batch=dones_batch)
-
-
-            # with h5py.File(expert_data_path, 'r') as f:
-            #     demos = list(f["data"].keys())
-
-            #     # Get dataset length and check if it fits the experience buffer
-            #     assert (len(demos) <= size), f"The demonstrations (size: {len(demos)}) cannot be fit into the replay buffer (size: {size})"
-
-            #     iteration = 0
-            #     total = len(demos)
-            #     printProgressBar(iteration, total, prefix = 'Loading demonstration:', suffix = 'Complete', length = 100)
-            #     for ep in demos:
-            #         ep_length = f["data/{}".format(ep)].attrs["num_samples"]
-            #         for k in range(ep_length):
-            #             obs_list = [f["data/{}/obs/{}".format(ep, obs_signal)][k] for obs_signal in f["data/{}/obs".format(ep)].keys()]
-            #             obs = np.hstack(obs_list)
-                            
-            #             next_obs_list = [f["data/{}/next_obs/{}".format(ep, obs_signal)][k] for obs_signal in f["data/{}/next_obs".format(ep)].keys()]
-            #             next_obs = np.hstack(next_obs_list)
-
-            #             if encoder is not None:
-            #                 obs = encoder.nets["policy"].forward(inputs=obs,
-            #                                                     outputs=obs,
-            #                                                     freeze_encoder=True,)["encoder_z"]
-
-            #                 obs_next = encoder.nets["policy"].forward(inputs=obs_next,
-            #                                                             outputs=obs_next,
-            #                                                             freeze_encoder=True,)["encoder_z"]
-
-            #             act = f["data/{}/actions".format(ep)][k]
-
-            #             rew = f["data/{}/rewards".format(ep)][k]
-
-            #             done = f["data/{}/dones".format(ep)][k]
-
-            #             self.store(obs=obs, act=act, rew=rew, next_obs=next_obs, done=done)
-
-            #         printProgressBar(iteration+1, total, prefix = 'Loading demonstration:', suffix = 'Complete', length = 100)
-            #         iteration = iteration + 1
 
             print("Demonstration loading is done")
 
@@ -131,7 +125,7 @@ class ReplayBuffer:
         self.size = batch_size
         
 
-    def sample_batch(self, batch_size=32):
+    def sample_batch(self, batch_size=400):
         idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
@@ -148,7 +142,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         update_after=1000, update_every=50, act_noise=0.1, target_noise=0.2, 
         noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, pretrain_on_demonstration=False,
-        pretrain_steps=10, encoder=None):
+        pretrain_steps=10, encoder=None, force_scale=None, expert_data=None, obs_normalization_stats=None,
+        render=False):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
     Args:
@@ -222,13 +217,26 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # logger = EpochLogger(**logger_kwargs)
     # logger.save_config(locals())
 
+    mylogger = MyLogger()
+    
+
+    # mylogger = dict()
+    # mylogger['losses'] = dict()
+    # mylogger['losses']['LossQ'] = []
+    # mylogger['losses']['LossPi'] = []
+
+    # mylogger['EpRet'] = []
+    # mylogger['EpLen'] = []
+    # mylogger['TestEpRet'] = []
+    # mylogger['TestEpLen'] = []
+
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     o = env.reset()
 
     if encoder is not None:
-        o = encode_obs(encoder=encoder, obs=o)
+        o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
     print("Creating experience collector and test environment")
 
@@ -262,12 +270,14 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, 
         act_dim=act_dim, 
         size=replay_size, 
-        expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5',
-        encoder=encoder)
+        expert_data=expert_data,
+        encoder=encoder,
+        obs_normalization_stats=obs_normalization_stats)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
     # logger.log('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n'%var_counts)
+    print("\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n"%var_counts)
 
     # Set up function for computing TD3 Q-losses
     def compute_loss_q(data):
@@ -325,6 +335,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # Record things
         # logger.store(LossQ=loss_q.item(), **loss_info)
+        mylogger.store(LossQ=loss_q.item())
+        # mylogger["losses"]["LossQ"].append(loss_q.item())
 
         # Possibly update pi and target networks
         if timer % policy_delay == 0:
@@ -346,6 +358,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             # Record things
             # logger.store(LossPi=loss_pi.item())
+            mylogger.store(LossPi=loss_pi.item())
+            # mylogger["losses"]["LossPi"].append(loss_pi.item())
 
             # Finally, update target networks by polyak averaging.
             with torch.no_grad():
@@ -360,16 +374,39 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         a += noise_scale * np.random.randn(act_dim)
         return np.clip(a, -act_limit, act_limit)
 
+    # set download folder and make it
+    download_folder = "/tmp/robomimic_ds_example"
+    os.makedirs(download_folder, exist_ok=True)
+
+    # prepare to write playback trajectories to video
+    video_path = os.path.join(download_folder, "playback.mp4")
+    video_writer = imageio.get_writer(video_path, fps=20)
+
     def test_agent():
         print("Entered the test agent function")
         for j in range(num_test_episodes):
             # o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
-            o, d, ep_ret, ep_len = env.reset(), False, 0, 0
+
+            if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+                env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+                env.unwrapped.sim.forward()
+                obs_dict = env.unwrapped._get_observations()
+                o = env._flatten_obs(obs_dict)
+            else:
+                raise NotImplementedError
+
+            # o, d, ep_ret, ep_len = env.reset(), False, 0, 0
+            o, d, ep_ret, ep_len = o, False, 0, 0
 
             if encoder is not None:
-                o = encode_obs(encoder=encoder, obs=o)
+                o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
-            env.render()
+            if render:
+                env.render()
+            else:
+                # video_img = env.render(mode="rgb_array", height=512, width=512, camera_name="agentview")
+                video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
+                video_writer.append_data(video_img)
 
             while not(d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
@@ -379,32 +416,65 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 ep_len += 1
 
                 if encoder is not None:
-                    o = encode_obs(encoder=encoder, obs=o)
+                    o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
-                env.render()
+                if render:
+                    env.render()
+                else:
+                    # video_img = env.render(mode="rgb_array", height=512, width=512, camera_name="agentview")
+                    video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
+                    video_writer.append_data(video_img)
 
             # logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
+            mylogger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
+            # mylogger['TestEpRet'].append(ep_ret)
+            # mylogger['TestEpLen'].append(ep_len)
             print(f"Episode return after test: {ep_ret}")
 
     
     if pretrain_on_demonstration:
         print("Pretraining on the demonstration data")
         for i in range(pretrain_steps):
-            batch = replay_buffer.sample_batch(batch_size)
-            update(data=batch, timer=0)
+            # batch = replay_buffer.sample_batch(batch_size)
+            # update(data=batch, timer=0)
+            for j in range(update_every):
+                batch = replay_buffer.sample_batch(batch_size)
+                update(data=batch, timer=j)
         
+        # mylogger.plot(['LossQ', 'LossPi'])
 
     print("Prepare for interaction with the environment")
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
-    o, ep_ret, ep_len = env.reset(), 0, 0
+
+    with h5py.File('/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5', "r") as f:
+        demo_key = "demo_0"
+        init_state = f["data/{}/states".format(demo_key)][0]
+        model_xml = f["data/{}".format(demo_key)].attrs["model_file"]
+        initial_state_dict = dict(states=init_state, model=model_xml)
+
+    if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+        env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+        env.unwrapped.sim.forward()
+        obs_dict = env.unwrapped._get_observations()
+        o = env._flatten_obs(obs_dict)
+    else:
+        raise NotImplementedError
+
+    # o, ep_ret, ep_len = env.reset(), 0, 0
+    o, d, ep_ret, ep_len = o, False, 0, 0
 
     if encoder is not None:
-        o = encode_obs(encoder=encoder, obs=o)
+        o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
-    env.render()
+    if render:
+        env.render()
+
+    reward_history = [ep_ret]
+    signal_history = [o]
+    action_history = []
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
@@ -422,10 +492,15 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         ep_ret += r
         ep_len += 1
 
-        if encoder is not None:
-            o2 = encode_obs(encoder=encoder, obs=o2)
+        signal_history.append(o2)
+        reward_history.append(ep_ret)
+        action_history.append(a)
 
-        env.render()
+        if encoder is not None:
+            o2 = encode_obs(encoder=encoder, obs=o2, obs_normalization_stats=obs_normalization_stats)
+
+        if render:
+            env.render()
 
         # Ignore the "done" signal if it comes from hitting the time
         # horizon (that is, when it's an artificial terminal signal
@@ -442,12 +517,28 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # End of trajectory handling
         if d or (ep_len == max_ep_len):
             # logger.store(EpRet=ep_ret, EpLen=ep_len)
+            mylogger.store(EpRet=ep_ret, EpLen=ep_len)
+            # mylogger['EpRet'].append(ep_ret)
+            # mylogger['EpLen'].append(ep_len)
             print(f"Episode return after interaction: {ep_ret}")
 
-            o, ep_ret, ep_len = env.reset(), 0, 0
+            if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+                env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+                env.unwrapped.sim.forward()
+                obs_dict = env.unwrapped._get_observations()
+                o = env._flatten_obs(obs_dict)
+            else:
+                raise NotImplementedError
+
+            # o, ep_ret, ep_len = env.reset(), 0, 0
+            o, d, ep_ret, ep_len = o, False, 0, 0
+
+            reward_history = [ep_ret]
+            signal_history = [o]
+            action_history = []
 
             if encoder is not None:
-                o = encode_obs(encoder=encoder, obs=o)
+                o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
         # Update handling
         if t >= update_after and t % update_every == 0:
@@ -459,6 +550,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if (t+1) % steps_per_epoch == 0:
             print(f"The size of data in the replay buffer: {replay_buffer.size}/{replay_buffer.max_size}")
             epoch = (t+1) // steps_per_epoch
+
+            print(f"Epoch {epoch}")
 
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
@@ -483,6 +576,10 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             # logger.log_tabular('LossQ', average_only=True)
             # logger.log_tabular('Time', time.time()-start_time)
             # logger.dump_tabular()
+
+    if not render:
+            # done writing video
+            video_writer.close()
 
 # if __name__ == '__main__':
 #     import argparse

@@ -11,7 +11,7 @@ import torch
 import numpy as np
 
 
-def encode_obs(encoder, obs):
+def encode_obs(encoder, obs, obs_normalization_stats=None):
     obs_list = OrderedDict()
     ptr = 0
     for key, size in encoder.obs_key_shapes.items():
@@ -20,6 +20,11 @@ def encode_obs(encoder, obs):
 
     input_batch = dict()
     input_batch["obs"] = {k: torch.from_numpy(obs_list[k].reshape((1,obs_list[k].size))) for k in obs_list}
+
+    if obs_normalization_stats is not None:
+        obs_dict = {key: torch.unsqueeze(input_batch["obs"][key][0, :], 0) for key in input_batch["obs"]}
+        input_batch["obs"] = ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats)
+
     batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
     latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
     return np.squeeze(latent_obs.cpu().detach().numpy())

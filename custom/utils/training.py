@@ -3,9 +3,9 @@ from robomimic.utils.dataset import SequenceDataset
 from torch.utils.data import DataLoader
 
 
-def get_data_loader(dataset_path, seq_length=1):
+def get_data_loader(dataset_path, seq_length=1, normalize_obs=False, filter_key=None):
     """
-    Get the dataset from hdf5 file
+    Get a data loader to sample batches of data.
     Args:
         dataset_path (str): path to the dataset hdf5
     """
@@ -35,8 +35,8 @@ def get_data_loader(dataset_path, seq_length=1):
         goal_mode=None,
         hdf5_cache_mode="low_dim",          # cache everything from dataset except images in memory to avoid repeated file i/o
         hdf5_use_swmr=True,
-        hdf5_normalize_obs=False,
-        filter_by_attribute=None,       # can optionally provide a filter key here
+        hdf5_normalize_obs=normalize_obs,
+        filter_by_attribute=filter_key,       # can optionally provide a filter key here
     )
     print("\n============= Created Dataset =============")
     print(dataset)
