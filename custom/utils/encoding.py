@@ -45,13 +45,13 @@ def get_model(dataset_path, device):
     shape_meta = FileUtils.get_shape_metadata_from_dataset(
         dataset_path=dataset_path, 
         all_obs_keys=sorted((
-            "robot0_eef_force",
+            # "robot0_eef_force",
             "robot0_eef_pos", 
             "robot0_eef_quat",
-            "robot0_eef_vel_ang",
-            "robot0_eef_vel_lin",
+            # "robot0_eef_vel_ang",
+            # "robot0_eef_vel_lin",
             "robot0_gripper_qpos",
-            "robot0_gripper_qvel", 
+            # "robot0_gripper_qvel", 
             "object",
         )),
     )

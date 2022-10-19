@@ -6,6 +6,7 @@ from typing import Dict
 import numpy as np
 import torch
 from torch.optim import Adam
+from torch.optim import lr_scheduler
 import gym
 import time
 import algos.td3_core as core
@@ -28,7 +29,9 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for TD3 agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size, expert_data=None, encoder=None, obs_normalization_stats=None):
+    def __init__(self, obs_dim, act_dim, size, expert_data=None, encoder=None, obs_normalization_stats=None, env=None, demo_size=0):
+
+        self.demo_size = demo_size
 
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
@@ -63,35 +66,51 @@ class ReplayBuffer:
             # input_batch = dict()
             # input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
 
-            print("Encoding demonstration data observations...")
 
-            input_batch = encoder.process_batch_for_training(expert_data)
+            if encoder is not None:
+                print("Encoding demonstration data observations...")
 
-            # if force_scale != None:
-            #     input_batch['obs']['robot0_eef_force'] = input_batch['obs']['robot0_eef_force']*force_scale
+                input_batch = encoder.process_batch_for_training(expert_data)
 
-            batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
-            latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
+                # if force_scale != None:
+                #     input_batch['obs']['robot0_eef_force'] = input_batch['obs']['robot0_eef_force']*force_scale
 
-            # if obs_normalization_stats is not None:
-            #     obs_norms = []
-            #     for k in range(actions_batch.shape[0]):
-            #         obs_dict = {key: torch.unsqueeze(expert_data["next_obs"][key][k, 0, :], 0) for key in expert_data["next_obs"]}
-            #         obs_norms.append(ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats))
-                
-            #     expert_data["next_obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
+                batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
+                latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
 
-            input_batch = dict()
-            input_batch["next_obs"] = {k: expert_data["next_obs"][k][:, 0, :] for k in expert_data["next_obs"]}
+                # if obs_normalization_stats is not None:
+                #     obs_norms = []
+                #     for k in range(actions_batch.shape[0]):
+                #         obs_dict = {key: torch.unsqueeze(expert_data["next_obs"][key][k, 0, :], 0) for key in expert_data["next_obs"]}
+                #         obs_norms.append(ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats))
+                    
+                #     expert_data["next_obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
 
-            # if force_scale != None:
-            #     input_batch['next_obs']['robot0_eef_force'] = input_batch['next_obs']['robot0_eef_force']*force_scale
+                input_batch = dict()
+                input_batch["next_obs"] = {k: expert_data["next_obs"][k][:, 0, :] for k in expert_data["next_obs"]}
 
-            batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
-            latent_next_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['next_obs'])['mean']
+                # if force_scale != None:
+                #     input_batch['next_obs']['robot0_eef_force'] = input_batch['next_obs']['robot0_eef_force']*force_scale
 
-            obs_batch = latent_obs.cpu().detach().numpy()
-            next_obs_batch = latent_next_obs.cpu().detach().numpy()
+                batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
+                latent_next_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['next_obs'])['mean']
+
+                obs_batch = latent_obs.cpu().detach().numpy()
+                next_obs_batch = latent_next_obs.cpu().detach().numpy()
+            else:
+                obs_lst = []
+                next_obs_lst = []
+                for i in range(expert_data["actions"].shape[0]):
+                    sample_lst = dict()
+                    sample_lst['obs'] = {key.replace('object', 'object-state') : expert_data['obs'][key][i, 0, :] for key in expert_data['obs']}
+                    sample_lst['next_obs'] = {key.replace('object', 'object-state') : expert_data['next_obs'][key][i, 0, :] for key in expert_data['next_obs']}
+
+                    obs_lst.append(env._flatten_obs(sample_lst['obs']))
+                    next_obs_lst.append(env._flatten_obs(sample_lst['next_obs']))
+
+                obs_batch = np.array(obs_lst)
+                next_obs_batch = np.array(next_obs_lst)
+            
 
             self.store_demonstration(obs_batch=obs_batch, 
                                     act_batch=actions_batch,
@@ -108,7 +127,11 @@ class ReplayBuffer:
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
-        self.ptr = (self.ptr+1) % self.max_size
+        # self.ptr = (self.ptr+1) % self.max_size
+
+        if self.ptr+1 == self.max_size:
+            self.ptr = self.demo_size
+
         self.size = min(self.size+1, self.max_size)
 
     def store_demonstration(self, obs_batch, act_batch, rew_batch, next_obs_batch, done_batch):
@@ -126,7 +149,10 @@ class ReplayBuffer:
         
 
     def sample_batch(self, batch_size=400):
-        idxs = np.random.randint(0, self.size, size=batch_size)
+        num_of_demos = np.random.randint(low=0, high=batch_size)
+        idxs = np.random.randint(0, self.demo_size, size=num_of_demos)
+        idxs = np.concatenate((idxs, np.random.randint(0, self.size, size=batch_size-num_of_demos)))
+        # idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
@@ -246,7 +272,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     if encoder is not None:
         obs_dim = encoder.algo_config.vae["latent_dim"]
     else:
-        obs_dim = env.observation_space.shape
+        obs_dim = env.observation_space.shape[0]
     
     act_dim = env.action_space.shape[0]
 
@@ -272,7 +298,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         size=replay_size, 
         expert_data=expert_data,
         encoder=encoder,
-        obs_normalization_stats=obs_normalization_stats)
+        obs_normalization_stats=obs_normalization_stats,
+        env=env,
+        demo_size=update_after)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
@@ -322,6 +350,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Set up optimizers for policy and q-function
     pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
     q_optimizer = Adam(q_params, lr=q_lr)
+
+    q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.5)
+    pi_scheduler = lr_scheduler.ExponentialLR(pi_optimizer, gamma=0.99)
 
     # Set up model saving
     # logger.setup_pytorch_saver(ac)
@@ -383,9 +414,10 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     video_writer = imageio.get_writer(video_path, fps=20)
 
     def test_agent():
-        print("Entered the test agent function")
         for j in range(num_test_episodes):
             # o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
+
+            o, d, ep_ret, ep_len = env.reset(), False, 0, 0
 
             if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
                 env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
@@ -449,6 +481,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
 
+    o, ep_ret, ep_len = env.reset(), 0, 0
+
     with h5py.File('/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5', "r") as f:
         demo_key = "demo_0"
         init_state = f["data/{}/states".format(demo_key)][0]
@@ -476,6 +510,12 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     signal_history = [o]
     action_history = []
 
+    demo_key = "demo_0"
+    with h5py.File('/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5', "r") as f:
+        demo_actions = f["data/{}/actions".format(demo_key)][:]
+
+    demo_counter = 0
+
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
         
@@ -485,7 +525,12 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if t > start_steps:
             a = get_action(o, act_noise)
         else:
-            a = env.action_space.sample()
+            # a = env.action_space.sample()
+            # a = f["data/{}/actions".format(demo_key)][int(t-1) % 118, :]
+            a = demo_actions[demo_counter, :]
+            a += act_noise * np.random.randn(act_dim)
+            np.clip(a, -act_limit, act_limit)
+            demo_counter += 1
 
         # Step the env
         o2, r, d, _ = env.step(a)
@@ -515,12 +560,16 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         o = o2
 
         # End of trajectory handling
-        if d or (ep_len == max_ep_len):
+        # if d or (ep_len == max_ep_len):
+        if d or (ep_len == max_ep_len) or (demo_counter == 118):
+            demo_counter = 0
             # logger.store(EpRet=ep_ret, EpLen=ep_len)
             mylogger.store(EpRet=ep_ret, EpLen=ep_len)
             # mylogger['EpRet'].append(ep_ret)
             # mylogger['EpLen'].append(ep_len)
             print(f"Episode return after interaction: {ep_ret}")
+
+            o, ep_ret, ep_len = env.reset(), 0, 0
 
             if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
                 env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
@@ -552,6 +601,10 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             epoch = (t+1) // steps_per_epoch
 
             print(f"Epoch {epoch}")
+
+            if t > start_steps:
+                q_scheduler.step()
+                pi_scheduler.step()
 
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):

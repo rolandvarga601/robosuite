@@ -33,7 +33,7 @@ from utils.training import get_data_loader
 
 if __name__ == "__main__":
 
-    encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch99.pth")
+    encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch49.pth")
     encoder.set_eval()
 
     expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5'
@@ -56,32 +56,65 @@ if __name__ == "__main__":
 
     print("Environment set up")
 
-    # agent = RandomAgent(env.action_spec)
-    # td3(setup_environment, max_ep_len=100)
+
     td3(env, 
         max_ep_len=200, 
-        epochs=50,
-        start_steps=200,
+        epochs=100,
+        start_steps=2000,
         steps_per_epoch=1000,
+        # ac_kwargs=dict(hidden_sizes=[400, 400, 300]),
         ac_kwargs=dict(hidden_sizes=[400, 300]),
-        update_after=200, 
+        update_after=2000,
+        update_every=50,
+        polyak=0.95,
         num_test_episodes=1, 
         replay_size=int(1e6), 
-        pretrain_on_demonstration=True, 
-        pretrain_steps=10,
-        encoder=encoder,
+        pretrain_on_demonstration=False, 
+        pretrain_steps=50,
+        encoder=None,
         # batch_size=400,
-        batch_size=800,
+        batch_size=1000,
         force_scale=None,
-        expert_data=demo_data,
+        expert_data=None,
         obs_normalization_stats=obs_normalization_stats,
         # pi_lr=1e-3,
         # q_lr=1e-5,
+        # pi_lr=1e-4,
+        # q_lr=1e-5,
         pi_lr=1e-4,
-        q_lr=1e-5,
+        q_lr=1e-5*10,
         noise_clip=0.1,
-        policy_delay=10,
-        render=render)
+        act_noise=0.02,
+        policy_delay=5,
+        render=render,
+        target_noise=0.1)
+
+    
+    # Paramset that is almost working.... 
+    #
+    # td3(env, 
+    #     max_ep_len=200, 
+    #     epochs=100,
+    #     start_steps=1000,
+    #     steps_per_epoch=1000,
+    #     ac_kwargs=dict(hidden_sizes=[400, 400, 300]),
+    #     update_after=1000,
+    #     update_every=50,
+    #     num_test_episodes=1, 
+    #     replay_size=int(1e6), 
+    #     pretrain_on_demonstration=False, 
+    #     pretrain_steps=50,
+    #     encoder=encoder,
+    #     batch_size=800,
+    #     force_scale=None,
+    #     expert_data=None,
+    #     obs_normalization_stats=obs_normalization_stats,
+    #     pi_lr=1e-4,
+    #     q_lr=1e-4,
+    #     noise_clip=0.3,
+    #     act_noise=0.1,
+    #     policy_delay=2,
+    #     render=render)
 
     print("Starting rollout")
 
