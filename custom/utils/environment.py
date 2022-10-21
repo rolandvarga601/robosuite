@@ -6,7 +6,7 @@ import robomimic.utils.env_utils as EnvUtils
 from gym import Env
 
 
-def setup_environment(encoder=None, hdf5_path=None, render=False):
+def setup_environment(render_kwargs, encoder=None, hdf5_path=None, keys=None):
 
     # Create dict to hold options that will be passed to env creation call
     options = {}
@@ -67,20 +67,31 @@ def setup_environment(encoder=None, hdf5_path=None, render=False):
     #     ).env
     # )
 
-    env = GymWrapper(
-        EnvUtils.create_env_from_metadata(
-            env_meta=env_meta,
-            render=render,
-            render_offscreen=not render,
-        ).env, 
-        keys=[key.replace('object', 'object-state') for key in list(encoder.obs_key_shapes.keys())]
-    )
+
+    if encoder is not None:
+        env = GymWrapper(
+            EnvUtils.create_env_from_metadata(
+                env_meta=env_meta,
+                render=render_kwargs["onscreen"],
+                render_offscreen=render_kwargs["offscreen"],
+            ).env, 
+            keys=[key.replace('object', 'object-state') for key in list(encoder.obs_key_shapes.keys())]
+        )
+    else:
+        env = GymWrapper(
+            EnvUtils.create_env_from_metadata(
+                env_meta=env_meta,
+                render=render_kwargs["onscreen"],
+                render_offscreen=render_kwargs["offscreen"],
+            ).env, 
+            keys=keys
+        )
 
     assert isinstance(env, Env)
 
     env.reset()
 
-    if render:
+    if render_kwargs["onscreen"]:
         env.render()
         env.viewer.set_camera(camera_id=0)
 

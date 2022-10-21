@@ -67,10 +67,10 @@ def get_model(dataset_path, device):
     return model
 
 
-def load_observer(checkpoint_path):
+def load_observer(checkpoint_path, dataset_path):
     assert os.path.exists(checkpoint_path)
 
-    model = get_model(dataset_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5',
+    model = get_model(dataset_path=dataset_path,
         device='cuda')
 
     ckpt_dict = load_dict_from_checkpoint(checkpoint_path)

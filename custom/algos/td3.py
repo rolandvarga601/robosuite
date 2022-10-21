@@ -29,7 +29,7 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for TD3 agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size, expert_data=None, encoder=None, obs_normalization_stats=None, env=None, demo_size=0):
+    def __init__(self, obs_dim, act_dim, size, expert_data=None, encoder=None, obs_normalization_stats=None, env=None, demo_size=0, reward_correction=None):
 
         self.demo_size = demo_size
 
@@ -48,6 +48,9 @@ class ReplayBuffer:
             actions_batch = np.squeeze(actions_batch)
             dones_batch = np.squeeze(dones_batch)
             rewards_batch = np.squeeze(rewards_batch)
+
+            if reward_correction is not None:
+                rewards_batch = rewards_batch + reward_correction
             
             # if obs_normalization_stats is not None:
             #     print("Normalizing demonstration data observations...")
@@ -146,6 +149,7 @@ class ReplayBuffer:
         self.done_buf[0:batch_size] = done_batch
         self.ptr = batch_size
         self.size = batch_size
+        self.demo_size = batch_size
         
 
     def sample_batch(self, batch_size=400):
@@ -160,6 +164,9 @@ class ReplayBuffer:
                      done=self.done_buf[idxs])
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
+    def set_demo_size(self, demo_size):
+        self.demo_size = demo_size
+
 
 
 def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0, 
@@ -168,8 +175,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         update_after=1000, update_every=50, act_noise=0.1, target_noise=0.2, 
         noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, pretrain_on_demonstration=False,
-        pretrain_steps=10, encoder=None, force_scale=None, expert_data=None, obs_normalization_stats=None,
-        render=False):
+        pretrain_steps=10, encoder=None, force_scale=None, expert_data=None, obs_normalization_stats=None, 
+        expert_data_path=None, fix_scenario=False, reward_correction=None):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
     Args:
@@ -300,7 +307,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         encoder=encoder,
         obs_normalization_stats=obs_normalization_stats,
         env=env,
-        demo_size=update_after)
+        reward_correction=reward_correction)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
@@ -419,13 +426,14 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             o, d, ep_ret, ep_len = env.reset(), False, 0, 0
 
-            if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
-                env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
-                env.unwrapped.sim.forward()
-                obs_dict = env.unwrapped._get_observations()
-                o = env._flatten_obs(obs_dict)
-            else:
-                raise NotImplementedError
+            if fix_scenario:
+                if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+                    env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+                    env.unwrapped.sim.forward()
+                    obs_dict = env.unwrapped._get_observations()
+                    o = env._flatten_obs(obs_dict)
+                else:
+                    raise NotImplementedError
 
             # o, d, ep_ret, ep_len = env.reset(), False, 0, 0
             o, d, ep_ret, ep_len = o, False, 0, 0
@@ -433,9 +441,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             if encoder is not None:
                 o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
-            if render:
+            if env.unwrapped.has_renderer:
                 env.render()
-            else:
+            elif env.unwrapped.has_offscreen_renderer:
                 # video_img = env.render(mode="rgb_array", height=512, width=512, camera_name="agentview")
                 video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
                 video_writer.append_data(video_img)
@@ -444,15 +452,19 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 # Take deterministic actions at test time (noise_scale=0)
                 # o, r, d, _ = test_env.step(get_action(o, 0))
                 o, r, d, _ = env.step(get_action(o, 0))
+
+                if reward_correction is not None:
+                    r += reward_correction
+
                 ep_ret += r
                 ep_len += 1
 
                 if encoder is not None:
                     o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
-                if render:
+                if env.unwrapped.has_renderer:
                     env.render()
-                else:
+                elif env.unwrapped.has_offscreen_renderer:
                     # video_img = env.render(mode="rgb_array", height=512, width=512, camera_name="agentview")
                     video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
                     video_writer.append_data(video_img)
@@ -479,23 +491,37 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
+
+    demo_counter = 0
+    demo_len = -1
+    if fix_scenario:
+        demo_key = "demo_0"
+        with h5py.File(expert_data_path, "r") as f:
+            demo_actions = f["data/{}/actions".format(demo_key)][:]
+
+        demo_len = demo_actions.shape[0]
+
+        replay_buffer.set_demo_size(update_after)
+
+
     start_time = time.time()
 
     o, ep_ret, ep_len = env.reset(), 0, 0
 
-    with h5py.File('/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5', "r") as f:
-        demo_key = "demo_0"
-        init_state = f["data/{}/states".format(demo_key)][0]
-        model_xml = f["data/{}".format(demo_key)].attrs["model_file"]
-        initial_state_dict = dict(states=init_state, model=model_xml)
+    if fix_scenario:
+        with h5py.File(expert_data_path, "r") as f:
+            demo_key = "demo_0"
+            init_state = f["data/{}/states".format(demo_key)][0]
+            model_xml = f["data/{}".format(demo_key)].attrs["model_file"]
+            initial_state_dict = dict(states=init_state, model=model_xml)
 
-    if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
-        env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
-        env.unwrapped.sim.forward()
-        obs_dict = env.unwrapped._get_observations()
-        o = env._flatten_obs(obs_dict)
-    else:
-        raise NotImplementedError
+        if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+            env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+            env.unwrapped.sim.forward()
+            obs_dict = env.unwrapped._get_observations()
+            o = env._flatten_obs(obs_dict)
+        else:
+            raise NotImplementedError
 
     # o, ep_ret, ep_len = env.reset(), 0, 0
     o, d, ep_ret, ep_len = o, False, 0, 0
@@ -503,48 +529,50 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     if encoder is not None:
         o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
 
-    if render:
+    if env.unwrapped.has_renderer:
         env.render()
 
     reward_history = [ep_ret]
     signal_history = [o]
     action_history = []
 
-    demo_key = "demo_0"
-    with h5py.File('/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5', "r") as f:
-        demo_actions = f["data/{}/actions".format(demo_key)][:]
-
-    demo_counter = 0
-
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
+
+        env_step_time_start = time.time()
         
         # Until start_steps have elapsed, randomly sample actions
         # from a uniform distribution for better exploration. Afterwards, 
         # use the learned policy (with some noise, via act_noise). 
         if t > start_steps:
             a = get_action(o, act_noise)
-        else:
-            # a = env.action_space.sample()
-            # a = f["data/{}/actions".format(demo_key)][int(t-1) % 118, :]
+        elif fix_scenario:
             a = demo_actions[demo_counter, :]
             a += act_noise * np.random.randn(act_dim)
             np.clip(a, -act_limit, act_limit)
             demo_counter += 1
+        else:
+            a = env.action_space.sample()
 
         # Step the env
         o2, r, d, _ = env.step(a)
+
+        if reward_correction is not None:
+                r += reward_correction
+
         ep_ret += r
         ep_len += 1
 
+        mylogger.store(EnvStepDuration=time.time()-env_step_time_start)
+
         signal_history.append(o2)
-        reward_history.append(ep_ret)
+        # reward_history.append(ep_ret)
         action_history.append(a)
 
         if encoder is not None:
             o2 = encode_obs(encoder=encoder, obs=o2, obs_normalization_stats=obs_normalization_stats)
 
-        if render:
+        if env.unwrapped.has_renderer:
             env.render()
 
         # Ignore the "done" signal if it comes from hitting the time
@@ -552,8 +580,19 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # that isn't based on the agent's state)
         d = False if ep_len==max_ep_len else d
 
+        # if d:
+            # r += 100
+            # ep_ret += 100
+
+        reward_history.append(ep_ret)
+
+
+        store_start = time.time()
+
         # Store experience to replay buffer
         replay_buffer.store(o, a, r, o2, d)
+
+        mylogger.store(StoreDuration=time.time()-store_start)
 
         # Super critical, easy to overlook step: make sure to update 
         # most recent observation!
@@ -561,7 +600,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # End of trajectory handling
         # if d or (ep_len == max_ep_len):
-        if d or (ep_len == max_ep_len) or (demo_counter == 118):
+        if d or (ep_len == max_ep_len) or (demo_counter == demo_len):
             demo_counter = 0
             # logger.store(EpRet=ep_ret, EpLen=ep_len)
             mylogger.store(EpRet=ep_ret, EpLen=ep_len)
@@ -571,13 +610,14 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             o, ep_ret, ep_len = env.reset(), 0, 0
 
-            if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
-                env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
-                env.unwrapped.sim.forward()
-                obs_dict = env.unwrapped._get_observations()
-                o = env._flatten_obs(obs_dict)
-            else:
-                raise NotImplementedError
+            if fix_scenario:
+                if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+                    env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+                    env.unwrapped.sim.forward()
+                    obs_dict = env.unwrapped._get_observations()
+                    o = env._flatten_obs(obs_dict)
+                else:
+                    raise NotImplementedError
 
             # o, ep_ret, ep_len = env.reset(), 0, 0
             o, d, ep_ret, ep_len = o, False, 0, 0
@@ -616,6 +656,23 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             # Test the performance of the deterministic version of the agent.
             test_agent()
 
+            o, ep_ret, ep_len = env.reset(), 0, 0
+
+            if fix_scenario:
+                if hasattr(env.unwrapped.sim, "set_state_from_flattened"):
+                    env.unwrapped.sim.set_state_from_flattened(initial_state_dict["states"])
+                    env.unwrapped.sim.forward()
+                    obs_dict = env.unwrapped._get_observations()
+                    o = env._flatten_obs(obs_dict)
+                else:
+                    raise NotImplementedError
+
+            # o, ep_ret, ep_len = env.reset(), 0, 0
+            o, d, ep_ret, ep_len = o, False, 0, 0
+
+            if encoder is not None:
+                o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+
             # Log info about epoch
             # logger.log_tabular('Epoch', epoch)
             # logger.log_tabular('EpRet', with_min_and_max=True)
@@ -630,7 +687,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             # logger.log_tabular('Time', time.time()-start_time)
             # logger.dump_tabular()
 
-    if not render:
+    if env.unwrapped.has_offscreen_renderer:
             # done writing video
             video_writer.close()
 

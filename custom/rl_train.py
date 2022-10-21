@@ -30,64 +30,89 @@ from algos.td3 import td3
 from utils.encoding import load_observer
 import os
 from utils.training import get_data_loader
+from robomimic.config import config_factory
+import robomimic.utils.obs_utils as ObsUtils
 
 if __name__ == "__main__":
 
-    encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch49.pth")
-    encoder.set_eval()
+    # expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5'
+    expert_data_path='/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_shaped.hdf5'
+    render_kwargs = dict()
+    render_kwargs["onscreen"] = False
+    render_kwargs["offscreen"] = True
+    fix_scenario = False
+    use_encoder = True
+    keys = ['object-state', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+    reward_correction = None
 
-    expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5'
+    if use_encoder:
+        encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch99.pth", dataset_path=expert_data_path)
+        encoder.set_eval()
+    else:
+        encoder = None
+        config = config_factory(algo_name="vae_rep")
 
-    print("Loading the expert demonstration data into the replay buffer...")
+        # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
+        ObsUtils.initialize_obs_utils_with_config(config)
+
     assert os.path.exists(expert_data_path)
 
-    render = False
-
+    print("Environment set up")
     # Setup environment based on the dataset
-    env = setup_environment(encoder=encoder, hdf5_path=expert_data_path, render=render)
+    env = setup_environment(encoder=encoder, hdf5_path=expert_data_path, render_kwargs=render_kwargs, keys=keys)
 
-    data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1, normalize_obs=True)
+    print("Loading the expert demonstration data...")
 
-    obs_normalization_stats = data_loader.dataset.get_obs_normalization_stats()
+    if use_encoder:
+        # Load normalized data
+        data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1, normalize_obs=True)
+    else:
+        data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1, normalize_obs=False)
+
+    if use_encoder:
+        obs_normalization_stats = data_loader.dataset.get_obs_normalization_stats()
+    else:
+        obs_normalization_stats = None
 
     data_loader_iterator = iter(data_loader)
 
     demo_data = next(data_loader_iterator)
 
-    print("Environment set up")
-
 
     td3(env, 
         max_ep_len=200, 
-        epochs=100,
-        start_steps=2000,
+        epochs=500,
+        start_steps=0,
         steps_per_epoch=1000,
         # ac_kwargs=dict(hidden_sizes=[400, 400, 300]),
-        ac_kwargs=dict(hidden_sizes=[400, 300]),
-        update_after=2000,
-        update_every=50,
-        polyak=0.95,
+        ac_kwargs=dict(hidden_sizes=[256, 256]),
+        update_after=0,
+        update_every=10,
+        polyak=0.999,
+        gamma=0.999,
         num_test_episodes=1, 
         replay_size=int(1e6), 
         pretrain_on_demonstration=False, 
-        pretrain_steps=50,
-        encoder=None,
+        pretrain_steps=20,
+        encoder=encoder,
         # batch_size=400,
-        batch_size=1000,
+        batch_size=200,
         force_scale=None,
-        expert_data=None,
+        expert_data=demo_data,
+        expert_data_path=expert_data_path,
         obs_normalization_stats=obs_normalization_stats,
         # pi_lr=1e-3,
         # q_lr=1e-5,
         # pi_lr=1e-4,
         # q_lr=1e-5,
         pi_lr=1e-4,
-        q_lr=1e-5*10,
+        q_lr=1e-2,
         noise_clip=0.1,
-        act_noise=0.02,
-        policy_delay=5,
-        render=render,
-        target_noise=0.1)
+        act_noise=0.1,
+        policy_delay=2,
+        target_noise=0.1,
+        fix_scenario=fix_scenario,
+        reward_correction=reward_correction)
 
     
     # Paramset that is almost working.... 
