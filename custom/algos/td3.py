@@ -29,8 +29,9 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for TD3 agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size, expert_data=None, encoder=None, obs_normalization_stats=None, env=None, demo_size=0, reward_correction=None):
+    def __init__(self, obs_dim, act_dim, size, expert_data_dict=None, encoder=None, obs_normalization_stats=None, env=None, demo_size=0, reward_correction=None):
 
+        print("Creating the replay buffer...")
         self.demo_size = demo_size
 
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
@@ -40,88 +41,68 @@ class ReplayBuffer:
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
 
-        if expert_data is not None:
-            actions_batch = expert_data['actions'].numpy()
-            dones_batch = expert_data['dones'].numpy()
-            rewards_batch = expert_data['rewards'].numpy()
+        if expert_data_dict is not None:
 
-            actions_batch = np.squeeze(actions_batch)
-            dones_batch = np.squeeze(dones_batch)
-            rewards_batch = np.squeeze(rewards_batch)
+            for key, expert_data in expert_data_dict.items():
 
-            if reward_correction is not None:
-                rewards_batch = rewards_batch + reward_correction
-            
-            # if obs_normalization_stats is not None:
-            #     print("Normalizing demonstration data observations...")
-            #     obs_norms = []
-            #     next_obs_norms = []
-            #     for k in range(actions_batch.shape[0]):
-            #         obs_dict = {key: torch.unsqueeze(expert_data["obs"][key][k, 0, :], 0) for key in expert_data["obs"]}
-            #         next_obs_dict = {key: torch.unsqueeze(expert_data["next_obs"][key][k, 0, :], 0) for key in expert_data["next_obs"]}
+                actions_batch = expert_data['actions'].numpy()
+                dones_batch = expert_data['dones'].numpy()
+                rewards_batch = expert_data['rewards'].numpy()
 
-            #         obs_norms.append(ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats))
-            #         next_obs_norms.append(ObsUtils.normalize_obs(obs_dict=next_obs_dict, obs_normalization_stats=obs_normalization_stats))
-                
-            #     expert_data["obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
-            #     expert_data["next_obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
+                actions_batch = np.squeeze(actions_batch)
+                dones_batch = np.squeeze(dones_batch)
+                rewards_batch = np.squeeze(rewards_batch)
 
-            # input_batch = dict()
-            # input_batch["obs"] = {k: batch["obs"][k][:, 0, :] for k in batch["obs"]}
+                if reward_correction is not None:
+                    rewards_batch = rewards_batch + reward_correction
 
+                if encoder is not None:
+                    print("Encoding demonstration data observations...")
 
-            if encoder is not None:
-                print("Encoding demonstration data observations...")
+                    input_batch = encoder.process_batch_for_training(expert_data)
 
-                input_batch = encoder.process_batch_for_training(expert_data)
+                    batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
+                    latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
 
-                # if force_scale != None:
-                #     input_batch['obs']['robot0_eef_force'] = input_batch['obs']['robot0_eef_force']*force_scale
+                    input_batch = dict()
+                    input_batch["next_obs"] = {k: expert_data["next_obs"][k][:, 0, :] for k in expert_data["next_obs"]}
 
-                batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
-                latent_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['obs'])['mean']
+                    batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
+                    latent_next_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['next_obs'])['mean']
 
-                # if obs_normalization_stats is not None:
-                #     obs_norms = []
-                #     for k in range(actions_batch.shape[0]):
-                #         obs_dict = {key: torch.unsqueeze(expert_data["next_obs"][key][k, 0, :], 0) for key in expert_data["next_obs"]}
-                #         obs_norms.append(ObsUtils.normalize_obs(obs_dict=obs_dict, obs_normalization_stats=obs_normalization_stats))
-                    
-                #     expert_data["next_obs"] = {key: torch.cat(tuple(torch.unsqueeze(o[key], 0) for o in obs_norms), 0) for key in obs_dict}
+                    obs_batch = latent_obs.cpu().detach().numpy()
+                    next_obs_batch = latent_next_obs.cpu().detach().numpy()
+                else:
+                    obs_lst = []
+                    next_obs_lst = []
+                    for i in range(expert_data["actions"].shape[0]):
+                        sample_lst = dict()
+                        sample_lst['obs'] = {key.replace('object', 'object-state') : expert_data['obs'][key][i, 0, :] for key in expert_data['obs']}
+                        sample_lst['next_obs'] = {key.replace('object', 'object-state') : expert_data['next_obs'][key][i, 0, :] for key in expert_data['next_obs']}
 
-                input_batch = dict()
-                input_batch["next_obs"] = {k: expert_data["next_obs"][k][:, 0, :] for k in expert_data["next_obs"]}
+                        obs_lst.append(env._flatten_obs(sample_lst['obs']))
+                        next_obs_lst.append(env._flatten_obs(sample_lst['next_obs']))
 
-                # if force_scale != None:
-                #     input_batch['next_obs']['robot0_eef_force'] = input_batch['next_obs']['robot0_eef_force']*force_scale
+                    obs_batch = np.array(obs_lst)
+                    next_obs_batch = np.array(next_obs_lst)
 
-                batch_prep = TensorUtils.to_device(TensorUtils.to_float(input_batch), device='cuda')
-                latent_next_obs = encoder.nets['policy'].nets['encoder'].forward(input=batch_prep['next_obs'])['mean']
-
-                obs_batch = latent_obs.cpu().detach().numpy()
-                next_obs_batch = latent_next_obs.cpu().detach().numpy()
-            else:
-                obs_lst = []
-                next_obs_lst = []
-                for i in range(expert_data["actions"].shape[0]):
-                    sample_lst = dict()
-                    sample_lst['obs'] = {key.replace('object', 'object-state') : expert_data['obs'][key][i, 0, :] for key in expert_data['obs']}
-                    sample_lst['next_obs'] = {key.replace('object', 'object-state') : expert_data['next_obs'][key][i, 0, :] for key in expert_data['next_obs']}
-
-                    obs_lst.append(env._flatten_obs(sample_lst['obs']))
-                    next_obs_lst.append(env._flatten_obs(sample_lst['next_obs']))
-
-                obs_batch = np.array(obs_lst)
-                next_obs_batch = np.array(next_obs_lst)
-            
-
-            self.store_demonstration(obs_batch=obs_batch, 
-                                    act_batch=actions_batch,
-                                    rew_batch=rewards_batch,
-                                    next_obs_batch=next_obs_batch,
-                                    done_batch=dones_batch)
+                # if (key == 'success') or ("success" not in expert_data_dict):
+                if (key == 'success'):
+                    self.store_demonstration(obs_batch=obs_batch, 
+                                        act_batch=actions_batch,
+                                        rew_batch=rewards_batch,
+                                        next_obs_batch=next_obs_batch,
+                                        done_batch=dones_batch)
+                else:
+                    self.store_batch(obs_batch=obs_batch, 
+                                        act_batch=actions_batch,
+                                        rew_batch=rewards_batch,
+                                        next_obs_batch=next_obs_batch,
+                                        done_batch=dones_batch)
 
             print("Demonstration loading is done")
+
+        print("Replay buffer is created")
 
 
     def store(self, obs, act, rew, next_obs, done):
@@ -134,6 +115,8 @@ class ReplayBuffer:
 
         if self.ptr+1 == self.max_size:
             self.ptr = self.demo_size
+        else:
+            self.ptr += 1
 
         self.size = min(self.size+1, self.max_size)
 
@@ -150,12 +133,21 @@ class ReplayBuffer:
         self.ptr = batch_size
         self.size = batch_size
         self.demo_size = batch_size
+
+    def store_batch(self, obs_batch, act_batch, rew_batch, next_obs_batch, done_batch):
+        batch_size = obs_batch.shape[0]
+
+        for i in range(batch_size):
+            self.store(obs_batch[i,], act_batch[i,], rew_batch[i,], next_obs_batch[i,], done_batch[i,])
         
 
     def sample_batch(self, batch_size=400):
-        num_of_demos = np.random.randint(low=0, high=batch_size)
-        idxs = np.random.randint(0, self.demo_size, size=num_of_demos)
-        idxs = np.concatenate((idxs, np.random.randint(0, self.size, size=batch_size-num_of_demos)))
+        if self.demo_size > 0:
+            num_of_demos = np.random.randint(low=0, high=batch_size)
+            idxs = np.random.randint(0, self.demo_size, size=num_of_demos)
+            idxs = np.concatenate((idxs, np.random.randint(0, self.size, size=batch_size-num_of_demos)))
+        else:
+            idxs = np.random.randint(0, self.size, size=batch_size)
         # idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
@@ -175,8 +167,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         update_after=1000, update_every=50, act_noise=0.1, target_noise=0.2, 
         noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, pretrain_on_demonstration=False,
-        pretrain_steps=10, encoder=None, force_scale=None, expert_data=None, obs_normalization_stats=None, 
-        expert_data_path=None, fix_scenario=False, reward_correction=None):
+        pretrain_steps=10, encoder=None, force_scale=None, expert_data_dict=None, obs_normalization_stats=None, 
+        expert_data_path=None, fix_scenario=False, reward_correction=None, success_boost=None):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
     Args:
@@ -303,7 +295,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, 
         act_dim=act_dim, 
         size=replay_size, 
-        expert_data=expert_data,
+        expert_data_dict=expert_data_dict,
         encoder=encoder,
         obs_normalization_stats=obs_normalization_stats,
         env=env,
@@ -358,7 +350,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     pi_optimizer = Adam(ac.pi.parameters(), lr=pi_lr)
     q_optimizer = Adam(q_params, lr=q_lr)
 
-    q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.5)
+    # q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.8)
+    # pi_scheduler = lr_scheduler.ExponentialLR(pi_optimizer, gamma=0.99)
+    q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.99)
     pi_scheduler = lr_scheduler.ExponentialLR(pi_optimizer, gamma=0.99)
 
     # Set up model saving
@@ -453,6 +447,11 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 # o, r, d, _ = test_env.step(get_action(o, 0))
                 o, r, d, _ = env.step(get_action(o, 0))
 
+                d = int(env._check_success())
+
+                if d:
+                    r += success_boost
+
                 if reward_correction is not None:
                     r += reward_correction
 
@@ -473,7 +472,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             mylogger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
             # mylogger['TestEpRet'].append(ep_ret)
             # mylogger['TestEpLen'].append(ep_len)
-            print(f"Episode return after test: {ep_ret}")
+            print(f"Episode return after test: {ep_ret}         Episode length: {ep_len}")
 
     
     if pretrain_on_demonstration:
@@ -484,6 +483,11 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             for j in range(update_every):
                 batch = replay_buffer.sample_batch(batch_size)
                 update(data=batch, timer=j)
+
+            if i % 100 == 0:
+                print(f"Pretrain steps: {i}/{pretrain_steps}")
+                q_scheduler.step()
+                pi_scheduler.step()
         
         # mylogger.plot(['LossQ', 'LossPi'])
 
@@ -496,7 +500,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     demo_len = -1
     if fix_scenario:
         demo_key = "demo_0"
-        with h5py.File(expert_data_path, "r") as f:
+        with h5py.File(expert_data_path["success"], "r") as f:
             demo_actions = f["data/{}/actions".format(demo_key)][:]
 
         demo_len = demo_actions.shape[0]
@@ -509,7 +513,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     o, ep_ret, ep_len = env.reset(), 0, 0
 
     if fix_scenario:
-        with h5py.File(expert_data_path, "r") as f:
+        with h5py.File(expert_data_path["success"], "r") as f:
             demo_key = "demo_0"
             init_state = f["data/{}/states".format(demo_key)][0]
             model_xml = f["data/{}".format(demo_key)].attrs["model_file"]
@@ -556,6 +560,11 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # Step the env
         o2, r, d, _ = env.step(a)
+
+        d = int(env._check_success())
+
+        if d:
+            r += success_boost
 
         if reward_correction is not None:
                 r += reward_correction
@@ -606,7 +615,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             mylogger.store(EpRet=ep_ret, EpLen=ep_len)
             # mylogger['EpRet'].append(ep_ret)
             # mylogger['EpLen'].append(ep_len)
-            print(f"Episode return after interaction: {ep_ret}")
+            print(f"Episode return after interaction: {ep_ret}         Episode length: {ep_len}")
 
             o, ep_ret, ep_len = env.reset(), 0, 0
 
