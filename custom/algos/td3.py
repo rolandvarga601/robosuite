@@ -328,6 +328,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             q2_pi_targ = ac_targ.q2(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
             backup = r + gamma * (1 - d) * q_pi_targ
+            # backup = r + gamma * q_pi_targ
 
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup)**2).mean()
@@ -442,7 +443,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
                 video_writer.append_data(video_img)
 
-            while not(d or (ep_len == max_ep_len)):
+            # while not(d or (ep_len == max_ep_len)):
+            while not((ep_len == max_ep_len)):
                 # Take deterministic actions at test time (noise_scale=0)
                 # o, r, d, _ = test_env.step(get_action(o, 0))
                 o, r, d, _ = env.step(get_action(o, 0))
@@ -472,7 +474,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             mylogger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
             # mylogger['TestEpRet'].append(ep_ret)
             # mylogger['TestEpLen'].append(ep_len)
-            print(f"Episode return after test: {ep_ret}         Episode length: {ep_len}")
+            print(f"Episode return after test: {ep_ret}         Episode length: {ep_len}         End success: {d}")
 
     
     if pretrain_on_demonstration:
@@ -596,12 +598,12 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         reward_history.append(ep_ret)
 
 
-        store_start = time.time()
+        # store_start = time.time()
 
         # Store experience to replay buffer
         replay_buffer.store(o, a, r, o2, d)
 
-        mylogger.store(StoreDuration=time.time()-store_start)
+        # mylogger.store(StoreDuration=time.time()-store_start)
 
         # Super critical, easy to overlook step: make sure to update 
         # most recent observation!
@@ -609,13 +611,14 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # End of trajectory handling
         # if d or (ep_len == max_ep_len):
-        if d or (ep_len == max_ep_len) or (demo_counter == demo_len):
+        # if d or (ep_len == max_ep_len) or (demo_counter == demo_len):
+        if (ep_len == max_ep_len) or (demo_counter == demo_len):
             demo_counter = 0
             # logger.store(EpRet=ep_ret, EpLen=ep_len)
             mylogger.store(EpRet=ep_ret, EpLen=ep_len)
             # mylogger['EpRet'].append(ep_ret)
             # mylogger['EpLen'].append(ep_len)
-            print(f"Episode return after interaction: {ep_ret}         Episode length: {ep_len}")
+            print(f"Episode return after interaction: {ep_ret}         Episode length: {ep_len}         End success: {d}")
 
             o, ep_ret, ep_len = env.reset(), 0, 0
 
@@ -657,7 +660,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
-                pass
+                ckpt_folder = '/home/rvarga/Data/Delft/thesis/implementation/robosuite/custom/ckpt'
+                torch.save(ac.state_dict(), os.path.join(ckpt_folder, f"epoch{epoch}" + ".pth"))
                 # logger.save_state({'env': env}, None)
 
             print("Testing the agent")

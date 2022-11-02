@@ -59,7 +59,7 @@ if __name__ == "__main__":
     # keys = ['object-state', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
     keys = ['object-state', 'robot0_gripper_qpos']
     reward_correction = None
-    success_boost = 0
+    success_boost = 5
 
     if use_encoder:
         encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch99.pth", dataset_path=expert_data_path['exp'])
@@ -83,10 +83,10 @@ if __name__ == "__main__":
     if use_encoder:
         # Load normalized data
         data_loader["exp"] = get_data_loader(dataset_path=expert_data_path['exp'], seq_length=1, normalize_obs=True)
-        data_loader["success"] = get_data_loader(dataset_path=expert_data_path['success'], seq_length=1, normalize_obs=False)
+        # data_loader["success"] = get_data_loader(dataset_path=expert_data_path['success'], seq_length=1, normalize_obs=False)
     else:
         data_loader['exp'] = get_data_loader(dataset_path=expert_data_path['exp'], seq_length=1, normalize_obs=False)
-        data_loader['success'] = get_data_loader(dataset_path=expert_data_path['success'], seq_length=1, normalize_obs=False)
+        # data_loader['success'] = get_data_loader(dataset_path=expert_data_path['success'], seq_length=1, normalize_obs=False)
 
     print("Expert data has been loaded")
 
@@ -128,18 +128,21 @@ if __name__ == "__main__":
         start_steps=0,
         steps_per_epoch=1000,
         # ac_kwargs=dict(hidden_sizes=[400, 400, 300]),
-        ac_kwargs=dict(hidden_sizes=[256, 256]),
+        # ac_kwargs=dict(hidden_sizes=[256, 256]),
+        # ac_kwargs=dict(hidden_sizes=[128, 128]),
+        # ac_kwargs=dict(hidden_sizes=[84, 84]),
+        ac_kwargs=dict(hidden_sizes=[64, 64]),
         update_after=0,
         update_every=10,
-        polyak=0.999,
-        gamma=0.999,
+        polyak=0.995*0+0.99,
+        gamma=0.9,
         num_test_episodes=1, 
         replay_size=int(1e6)*0+int(250000), 
         pretrain_on_demonstration=True, 
-        pretrain_steps=8000,
+        pretrain_steps=10000,
         encoder=encoder,
         # batch_size=400,
-        batch_size=200,
+        batch_size=4000,
         force_scale=None,
         expert_data_dict=demo_data,
         expert_data_path=expert_data_path,
@@ -152,7 +155,7 @@ if __name__ == "__main__":
         q_lr=1e-2,
         noise_clip=0.1,
         act_noise=0.5,
-        policy_delay=2*0+10,
+        policy_delay=2*0+10*0+5,
         target_noise=0.1,
         fix_scenario=fix_scenario,
         reward_correction=reward_correction,
