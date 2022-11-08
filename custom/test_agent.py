@@ -11,12 +11,13 @@ from utils.logger import MyLogger
 import imageio
 
 if __name__ == "__main__":
-    expert_data_path = '/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_shaped_donemode0.hdf5'
+    expert_data_path = '/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_donemode0.hdf5'
 
     assert os.path.exists(expert_data_path)
 
     # ac_kwargs=dict(hidden_sizes=[256, 256])
     ac_kwargs=dict(hidden_sizes=[64, 64])
+    # ac_kwargs=dict(hidden_sizes=[22, 22, 22])
     render_kwargs = dict()
     render_kwargs["onscreen"] = False
     render_kwargs["offscreen"] = True
@@ -60,7 +61,7 @@ if __name__ == "__main__":
     act_limit = env.action_space.high[0]
 
     ckpt_folder = '/home/rvarga/Data/Delft/thesis/implementation/robosuite/custom/ckpt'
-    epoch = 93
+    epoch = 1
 
     # Create actor-critic module and target networks
     ac = core.MLPActorCritic(obs_dim, env.action_space, **ac_kwargs)
@@ -72,7 +73,7 @@ if __name__ == "__main__":
     os.makedirs(download_folder, exist_ok=True)
 
     # prepare to write playback trajectories to video
-    video_path = os.path.join(download_folder, "playback1.mp4")
+    video_path = os.path.join(download_folder, f"playback{epoch}.mp4")
     video_writer = imageio.get_writer(video_path, fps=20)
 
     max_ep_len = 100
