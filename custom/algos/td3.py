@@ -168,7 +168,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         noise_clip=0.5, policy_delay=2, num_test_episodes=10, max_ep_len=1000, 
         logger_kwargs=dict(), save_freq=1, pretrain_on_demonstration=False,
         pretrain_steps=10, encoder=None, force_scale=None, expert_data_dict=None, obs_normalization_stats=None, 
-        expert_data_path=None, fix_scenario=False, reward_correction=None, success_boost=None):
+        expert_data_path=None, fix_scenario=False, reward_correction=None, success_boost=None, target_bounds=dict(),
+        do_underestimation_step=False):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
     Args:
@@ -242,7 +243,25 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # logger = EpochLogger(**logger_kwargs)
     # logger.save_config(locals())
 
+    uses_encoder = True if encoder is not None else False
+
+    keys_to_save = ['actor_critic', 'ac_kwargs', 'seed', 
+        'steps_per_epoch', 'epochs', 'replay_size', 'gamma', 
+        'polyak', 'pi_lr', 'q_lr', 'batch_size', 'start_steps', 
+        'update_after', 'update_every', 'act_noise', 'target_noise', 
+        'noise_clip', 'policy_delay', 'num_test_episodes', 'max_ep_len', 
+        'logger_kwargs', 'save_freq', 'pretrain_on_demonstration',
+        'pretrain_steps', 'uses_encoder', 'obs_normalization_stats', 
+        'expert_data_path', 'fix_scenario', 'reward_correction', 'success_boost', 
+        'target_bounds', 'do_underestimation_step']
+
     mylogger = MyLogger()
+
+    vars_to_save = dict()
+    for key in keys_to_save:
+        vars_to_save[key] = locals()[key]
+
+    mylogger.save_config(vars_to_save)
     
 
     # mylogger = dict()
@@ -262,6 +281,13 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     if encoder is not None:
         o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+    elif obs_normalization_stats is not None:
+        obs_stats = dict()
+        obs_stats['mean'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['mean'][0] for key in env.keys])
+        obs_stats['std'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['std'][0] for key in env.keys])
+
+        o = (o-obs_stats['mean']) / obs_stats['std']
+
 
     print("Creating experience collector and test environment")
 
@@ -328,7 +354,10 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             q2_pi_targ = ac_targ.q2(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
 
-            q_pi_targ = torch.max(q_pi_targ, torch.zeros_like(q_pi_targ))
+            if "lb" in target_bounds.keys():
+                q_pi_targ = torch.max(q_pi_targ, torch.ones_like(q_pi_targ)*target_bounds['lb'])
+            if "ub" in target_bounds.keys():
+                q_pi_targ = torch.min(q_pi_targ, torch.ones_like(q_pi_targ)*target_bounds['ub'])
 
             backup = r + gamma * (1 - d) * q_pi_targ
             # backup = r + gamma * q_pi_targ
@@ -336,6 +365,36 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup)**2).mean()
         loss_q2 = ((q2 - backup)**2).mean()
+        loss_q = loss_q1 + loss_q2
+
+        # Useful info for logging
+        loss_info = dict(Q1Vals=q1.detach().numpy(),
+                         Q2Vals=q2.detach().numpy())
+
+        return loss_q, loss_info
+
+    # Set up function for computing TD3 Q-function overestimation losses
+    def compute_loss_q_overestimation(data):
+        o, a = torch.rand_like(data['obs']).subtract(0.5).mul_(10), torch.rand_like(data['act']).subtract(0.5).mul_(10)
+
+        q1 = ac.q1(o,a)
+        q2 = ac.q2(o,a)
+
+        # Calculating the minimum bounded target values
+        with torch.no_grad():
+            # Target Q-values
+            q1_pi_targ = ac_targ.q1(o, a)
+            q2_pi_targ = ac_targ.q2(o, a)
+            q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
+
+            if "lb" in target_bounds.keys():
+                q_pi_targ = torch.max(q_pi_targ, torch.ones_like(q_pi_targ)*target_bounds['lb'])
+            if "ub" in target_bounds.keys():
+                q_pi_targ = torch.min(q_pi_targ, torch.ones_like(q_pi_targ)*target_bounds['ub'])
+
+        # MSE loss against Bellman backup
+        loss_q1 = ((q1 - q_pi_targ)**2).mean()
+        loss_q2 = ((q2 - q_pi_targ)**2).mean()
         loss_q = loss_q1 + loss_q2
 
         # Useful info for logging
@@ -356,8 +415,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.8)
     # pi_scheduler = lr_scheduler.ExponentialLR(pi_optimizer, gamma=0.99)
-    q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.99)
-    pi_scheduler = lr_scheduler.ExponentialLR(pi_optimizer, gamma=0.99)
+    # q_scheduler = lr_scheduler.ExponentialLR(q_optimizer, gamma=0.99)
+    # pi_scheduler = lr_scheduler.ExponentialLR(pi_optimizer, gamma=0.99)
 
     # Set up model saving
     # logger.setup_pytorch_saver(ac)
@@ -373,6 +432,12 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # logger.store(LossQ=loss_q.item(), **loss_info)
         mylogger.store(LossQ=loss_q.item())
         # mylogger["losses"]["LossQ"].append(loss_q.item())
+
+        if do_underestimation_step:
+            q_optimizer.zero_grad()
+            loss_q, loss_info = compute_loss_q_overestimation(data)
+            loss_q.backward()
+            q_optimizer.step()
 
         # Possibly update pi and target networks
         if timer % policy_delay == 0:
@@ -438,6 +503,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             if encoder is not None:
                 o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+            elif obs_normalization_stats is not None:
+                o = (o-obs_stats['mean']) / obs_stats['std']
 
             if env.unwrapped.has_renderer:
                 env.render()
@@ -465,6 +532,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
                 if encoder is not None:
                     o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+                elif obs_normalization_stats is not None:
+                    o = (o-obs_stats['mean']) / obs_stats['std']
 
                 if env.unwrapped.has_renderer:
                     env.render()
@@ -491,8 +560,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             if i % 100 == 0:
                 print(f"Pretrain steps: {i}/{pretrain_steps}")
-                q_scheduler.step()
-                pi_scheduler.step()
+                # q_scheduler.step()
+                # pi_scheduler.step()
         
         # mylogger.plot(['LossQ', 'LossPi'])
 
@@ -537,6 +606,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     if encoder is not None:
         o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+    elif obs_normalization_stats is not None:
+        o = (o-obs_stats['mean']) / obs_stats['std']
 
     if env.unwrapped.has_renderer:
         env.render()
@@ -585,6 +656,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         if encoder is not None:
             o2 = encode_obs(encoder=encoder, obs=o2, obs_normalization_stats=obs_normalization_stats)
+        elif obs_normalization_stats is not None:
+            o2 = (o2-obs_stats['mean']) / obs_stats['std']
 
         if env.unwrapped.has_renderer:
             env.render()
@@ -643,6 +716,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             if encoder is not None:
                 o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+            elif obs_normalization_stats is not None:
+                o = (o-obs_stats['mean']) / obs_stats['std']
 
         # Update handling
         if t >= update_after and t % update_every == 0:
@@ -657,9 +732,9 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             print(f"Epoch {epoch}")
 
-            if t > start_steps:
-                q_scheduler.step()
-                pi_scheduler.step()
+            # if t > start_steps:
+                # q_scheduler.step()
+                # pi_scheduler.step()
 
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
@@ -688,6 +763,8 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             if encoder is not None:
                 o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
+            elif obs_normalization_stats is not None:
+                o = (o-obs_stats['mean']) / obs_stats['std']
 
             # Log info about epoch
             # logger.log_tabular('Epoch', epoch)

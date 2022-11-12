@@ -7,6 +7,7 @@ from utils.environment import setup_environment
 import os
 import numpy as np
 from utils.logger import MyLogger
+from utils.training import get_data_loader
 
 import imageio
 
@@ -24,7 +25,7 @@ if __name__ == "__main__":
     fix_scenario = False
     use_encoder = False
     # keys = ['object-state', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
-    keys = ['object-state', 'robot0_gripper_qpos']
+    keys = ['object-state', 'robot0_gripper_qpos', 'robot0_eef_quat']
     reward_correction = None
     success_boost = 0
     seed = 42
@@ -40,6 +41,10 @@ if __name__ == "__main__":
 
         # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
         ObsUtils.initialize_obs_utils_with_config(config)
+
+        data_loader = get_data_loader(dataset_path=expert_data_path, seq_length=1, normalize_obs=True)
+
+        obs_normalization_stats = data_loader.dataset.get_obs_normalization_stats()
 
     print("Environment set up")
     # Setup environment based on the dataset
@@ -61,7 +66,7 @@ if __name__ == "__main__":
     act_limit = env.action_space.high[0]
 
     ckpt_folder = '/home/rvarga/Data/Delft/thesis/implementation/robosuite/custom/ckpt'
-    epoch = 1
+    epoch = 108
 
     # Create actor-critic module and target networks
     ac = core.MLPActorCritic(obs_dim, env.action_space, **ac_kwargs)
@@ -76,12 +81,20 @@ if __name__ == "__main__":
     video_path = os.path.join(download_folder, f"playback{epoch}.mp4")
     video_writer = imageio.get_writer(video_path, fps=20)
 
-    max_ep_len = 100
+    max_ep_len = 150
     num_test_episodes = 20
+
+    if obs_normalization_stats is not None:
+        obs_stats = dict()
+        obs_stats['mean'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['mean'][0] for key in env.keys])
+        obs_stats['std'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['std'][0] for key in env.keys])
 
     for j in range(num_test_episodes):
 
         o, d, ep_ret, ep_len = env.reset(), False, 0, 0
+
+        if obs_normalization_stats is not None:
+            o = (o-obs_stats['mean']) / obs_stats['std']
 
         if env.unwrapped.has_renderer:
             env.render()
@@ -98,6 +111,9 @@ if __name__ == "__main__":
             # if d:
             #     a *= 0
             o, r, d, _ = env.step(a)
+
+            if obs_normalization_stats is not None:
+                o = (o-obs_stats['mean']) / obs_stats['std']
 
             d = int(env._check_success())
 

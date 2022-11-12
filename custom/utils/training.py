@@ -14,7 +14,7 @@ def get_data_loader(dataset_path, seq_length=1, normalize_obs=False, filter_key=
         obs_keys=(                      # observations we want to appear in batches
             # "robot0_eef_force",
             # "robot0_eef_pos", 
-            # "robot0_eef_quat",
+            "robot0_eef_quat",
             # "robot0_eef_vel_ang",
             # "robot0_eef_vel_lin",
             "robot0_gripper_qpos",

@@ -44,6 +44,8 @@ if __name__ == "__main__":
 
     # expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5'
     # expert_data_path='/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_shaped.hdf5'
+
+    seed = 22
     
     expert_data_path = OrderedDict()
     # expert_data_path['success']='/home/rvarga/implementation/robomimic/datasets/lift/ph/low_dim_shaped_donemode0.hdf5'
@@ -57,9 +59,14 @@ if __name__ == "__main__":
     fix_scenario = False
     use_encoder = False
     # keys = ['object-state', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
-    keys = ['object-state', 'robot0_gripper_qpos']
+    # keys = ['object-state', 'robot0_gripper_qpos', 'robot0_gripper_qvel']
+    keys = ['object-state', 'robot0_gripper_qpos', 'robot0_eef_quat']
     reward_correction = None
     success_boost = 5*0
+    # target_bounds = {"lb" : 0, "ub" : 1}
+    target_bounds = {"lb" : 0}
+    do_underestimation_step = True
+
 
     if use_encoder:
         encoder = load_observer("/home/rvarga/implementation/robomimic/custom/ckpt/epoch99.pth", dataset_path=expert_data_path['exp'])
@@ -75,7 +82,7 @@ if __name__ == "__main__":
 
     print("Environment set up")
     # Setup environment based on the dataset
-    env = setup_environment(encoder=encoder, hdf5_path=expert_data_path['success'], render_kwargs=render_kwargs, keys=keys)
+    env = setup_environment(encoder=encoder, hdf5_path=expert_data_path['exp'], render_kwargs=render_kwargs, keys=keys)
 
     print("Loading the expert demonstration data...")
 
@@ -85,7 +92,8 @@ if __name__ == "__main__":
         data_loader["exp"] = get_data_loader(dataset_path=expert_data_path['exp'], seq_length=1, normalize_obs=True)
         # data_loader["success"] = get_data_loader(dataset_path=expert_data_path['success'], seq_length=1, normalize_obs=False)
     else:
-        data_loader['exp'] = get_data_loader(dataset_path=expert_data_path['exp'], seq_length=1, normalize_obs=False)
+        # data_loader['exp'] = get_data_loader(dataset_path=expert_data_path['exp'], seq_length=1, normalize_obs=False)
+        data_loader['exp'] = get_data_loader(dataset_path=expert_data_path['exp'], seq_length=1, normalize_obs=True)
         # data_loader['success'] = get_data_loader(dataset_path=expert_data_path['success'], seq_length=1, normalize_obs=False)
 
     print("Expert data has been loaded")
@@ -93,7 +101,8 @@ if __name__ == "__main__":
     if use_encoder:
         obs_normalization_stats = data_loader['exp'].dataset.get_obs_normalization_stats()
     else:
-        obs_normalization_stats = None
+        # obs_normalization_stats = None
+        obs_normalization_stats = data_loader['exp'].dataset.get_obs_normalization_stats()
 
 
     data_loader_iterator = dict()
@@ -135,12 +144,12 @@ if __name__ == "__main__":
         # ac_kwargs=dict(hidden_sizes=[22, 22, 22]),
         update_after=0,
         update_every=10,
-        polyak=0.995*0+0.99,
+        polyak=0.995*0+0.995,
         gamma=0.9*0+0.99,
         num_test_episodes=1, 
         replay_size=int(1e6)*0+int(250000), 
         pretrain_on_demonstration=True, 
-        pretrain_steps=20000,
+        pretrain_steps=4000,
         encoder=encoder,
         # batch_size=400,
         batch_size=4000,
@@ -152,15 +161,18 @@ if __name__ == "__main__":
         # q_lr=1e-5,
         # pi_lr=1e-4,
         # q_lr=1e-5,
-        pi_lr=1e-4*10,
-        q_lr=1e-3,
-        noise_clip=0.1,
-        act_noise=0.5,
+        pi_lr=1e-4*10*10/10/2/4,
+        q_lr=1e-3*10/10/2/4,
+        noise_clip=0.5,
+        act_noise=0.3,
         policy_delay=2*0+10*0+2,
-        target_noise=0.1,
+        target_noise=0.2,
         fix_scenario=fix_scenario,
         reward_correction=reward_correction,
-        success_boost=success_boost)
+        success_boost=success_boost,
+        seed=seed,
+        target_bounds=target_bounds,
+        do_underestimation_step=do_underestimation_step)
 
     
     # Paramset that is almost working.... 
