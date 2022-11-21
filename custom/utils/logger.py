@@ -5,6 +5,8 @@ import json
 import os
 import atexit
 import time
+import torch
+import pickle
 
 
 color2num = dict(
@@ -28,6 +30,13 @@ class MyLogger:
             print("Warning: Log dir %s already exists! Storing info there anyway."%self.output_dir)
         else:
             os.makedirs(self.output_dir)
+
+        self.ckpt_dir = os.path.join(self.output_dir, "ckpt")
+        if os.path.exists(self.ckpt_dir):
+            print("Warning: Checkpoint dir %s already exists! Storing info there anyway."%self.output_dir)
+        else:
+            os.makedirs(self.ckpt_dir)
+
         self.output_file = open(os.path.join(self.output_dir, output_fname), 'w')
         atexit.register(self.output_file.close)
         print(self.colorize("Logging data to %s"%self.output_file.name, 'green', bold=True))
@@ -117,8 +126,16 @@ class MyLogger:
 
     def log(self, msg, color='green', write_to_file=False):
         """Print a colorized message to stdout."""
-        print(self.colorize(msg, color, bold=True))
+        print(self.colorize(msg, color, bold=False))
 
         if write_to_file and (self.output_file is not None):
             self.output_file.write(msg + "\n")
             self.output_file.flush()
+
+
+    def save_network(self, network_state_dict, epoch):
+        torch.save(network_state_dict, os.path.join(self.ckpt_dir, f"epoch{epoch}" + ".pth"))
+
+    def save_epoch_dict(self):
+        with open(os.path.join(self.output_dir, 'epoch_dict.pkl'), 'wb') as f:
+            pickle.dump(self.epoch_dict, f)

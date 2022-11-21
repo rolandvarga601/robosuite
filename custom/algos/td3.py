@@ -19,6 +19,8 @@ from utils.encoding import encode_obs
 import robomimic.utils.tensor_utils as TensorUtils
 import robomimic.utils.obs_utils as ObsUtils
 
+from PIL import Image, ImageDraw, ImageFont
+
 from utils.logger import MyLogger
 
 import imageio
@@ -169,7 +171,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         logger_kwargs=dict(), save_freq=1, pretrain_on_demonstration=False,
         pretrain_steps=10, encoder=None, force_scale=None, expert_data_dict=None, obs_normalization_stats=None, 
         expert_data_path=None, fix_scenario=False, reward_correction=None, success_boost=None, target_bounds=dict(),
-        do_underestimation_step=False):
+        do_underestimation_step=False, underest_delay=1, common_loss=True):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3)
     Args:
@@ -253,26 +255,15 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         'logger_kwargs', 'save_freq', 'pretrain_on_demonstration',
         'pretrain_steps', 'uses_encoder', 'obs_normalization_stats', 
         'expert_data_path', 'fix_scenario', 'reward_correction', 'success_boost', 
-        'target_bounds', 'do_underestimation_step']
+        'target_bounds', 'do_underestimation_step', 'underest_delay', 'common_loss']
 
-    mylogger = MyLogger()
+    mylogger = MyLogger(output_dir=logger_kwargs["savelocation"])
 
     vars_to_save = dict()
     for key in keys_to_save:
         vars_to_save[key] = locals()[key]
 
     mylogger.save_config(vars_to_save)
-    
-
-    # mylogger = dict()
-    # mylogger['losses'] = dict()
-    # mylogger['losses']['LossQ'] = []
-    # mylogger['losses']['LossPi'] = []
-
-    # mylogger['EpRet'] = []
-    # mylogger['EpLen'] = []
-    # mylogger['TestEpRet'] = []
-    # mylogger['TestEpLen'] = []
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -283,13 +274,13 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         o = encode_obs(encoder=encoder, obs=o, obs_normalization_stats=obs_normalization_stats)
     elif obs_normalization_stats is not None:
         obs_stats = dict()
-        obs_stats['mean'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['mean'][0] for key in env.keys])
-        obs_stats['std'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['std'][0] for key in env.keys])
+        obs_stats['mean'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['mean'][0] for key in env.keys], dtype=np.float32)
+        obs_stats['std'] = np.concatenate([obs_normalization_stats[key.replace('object-state','object')]['std'][0] for key in env.keys], dtype=np.float32)
 
         o = (o-obs_stats['mean']) / obs_stats['std']
 
 
-    print("Creating experience collector and test environment")
+    mylogger.log(msg="Creating experience collector and test environment", write_to_file=True)
 
     # env, test_env = env_fn(), env_fn()
     # env, test_env = env_fn, env_fn
@@ -330,7 +321,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
     # logger.log('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n'%var_counts)
-    print("\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n"%var_counts)
+    mylogger.log(msg="\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n"%var_counts, write_to_file=True)
 
     # Set up function for computing TD3 Q-losses
     def compute_loss_q(data):
@@ -375,7 +366,17 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Set up function for computing TD3 Q-function overestimation losses
     def compute_loss_q_overestimation(data):
-        o, a = torch.rand_like(data['obs']).subtract(0.5).mul_(10), torch.rand_like(data['act']).subtract(0.5).mul_(10)
+        # o, a = torch.rand_like(data['obs']).subtract(0.5).mul_(4), torch.rand_like(data['act']).subtract(0.5).mul_(10)
+        # if obs_normalization_stats is not None:
+        #     o = (o-obs_stats['mean']) / obs_stats['std']
+        scaler = dict()
+        scaler['amp'] = torch.max(data['obs'], dim=0)[0] - torch.min(data['obs'], dim=0)[0]
+        scaler['mean'] = (torch.max(data['obs'], dim=0)[0] + torch.min(data['obs'], dim=0)[0]) / 2
+        
+        o = torch.rand_like(data['obs']).subtract_(0.5).mul_(scaler['amp']*4).add(scaler['mean'])
+        a = torch.rand_like(data['act']).subtract_(0.5).mul(4)
+        # with torch.no_grad():
+        #     a = ac.pi(o)
 
         q1 = ac.q1(o,a)
         q2 = ac.q2(o,a)
@@ -422,21 +423,50 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # logger.setup_pytorch_saver(ac)
 
     def update(data, timer):
+        # obs_noise = torch.rand_like(data['obs']).subtract(0.5).mul_(0.1)
+        # if obs_normalization_stats is not None:
+        #     obs_noise = (obs_noise-obs_stats['mean']) / obs_stats['std']
+        # data['obs'] += obs_noise
+
+        # obs_noise = torch.rand_like(data['obs2']).subtract(0.5).mul_(0.1)
+        # if obs_normalization_stats is not None:
+        #     obs_noise = (obs_noise-obs_stats['mean']) / obs_stats['std']
+        # data['obs2'] += obs_noise
+
         # First run one gradient descent step for Q1 and Q2
         q_optimizer.zero_grad()
         loss_q, loss_info = compute_loss_q(data)
         loss_q.backward()
-        q_optimizer.step()
+        
+        if not common_loss:
+            q_optimizer.step()
 
         # Record things
         # logger.store(LossQ=loss_q.item(), **loss_info)
-        mylogger.store(LossQ=loss_q.item())
+        mylogger.store(LossQ=loss_q.item(), 
+            Q1ValsMax=loss_info['Q1Vals'].max().item(), Q2ValsMax=loss_info['Q2Vals'].max().item(),
+            Q1ValsMin=loss_info['Q1Vals'].min().item(), Q2ValsMin=loss_info['Q2Vals'].min().item(),
+            Q1ValsMean=loss_info['Q1Vals'].mean().item(), Q2ValsMean=loss_info['Q2Vals'].mean().item())
         # mylogger["losses"]["LossQ"].append(loss_q.item())
 
-        if do_underestimation_step:
-            q_optimizer.zero_grad()
-            loss_q, loss_info = compute_loss_q_overestimation(data)
-            loss_q.backward()
+        if do_underestimation_step and (timer % underest_delay == 0):
+            
+            if not common_loss:
+                q_optimizer.zero_grad()
+            
+            loss_q_underest, loss_info = compute_loss_q_overestimation(data)
+
+            loss_q_underest.backward()
+
+            if not common_loss:
+                q_optimizer.step()
+
+            mylogger.store(LossUQ=loss_q_underest.item(), 
+                UQ1ValsMax=loss_info['Q1Vals'].max().item(), UQ2ValsMax=loss_info['Q2Vals'].max().item(),
+                UQ1ValsMin=loss_info['Q1Vals'].min().item(), UQ2ValsMin=loss_info['Q2Vals'].min().item(),
+                UQ1ValsMean=loss_info['Q1Vals'].mean().item(), UQ2ValsMean=loss_info['Q2Vals'].mean().item())
+
+        if common_loss:
             q_optimizer.step()
 
         # Possibly update pi and target networks
@@ -476,14 +506,17 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         return np.clip(a, -act_limit, act_limit)
 
     # set download folder and make it
-    download_folder = "/tmp/robomimic_ds_example"
+    # download_folder = "/tmp/robomimic_ds_example"
+    download_folder = mylogger.output_dir
     os.makedirs(download_folder, exist_ok=True)
 
     # prepare to write playback trajectories to video
     video_path = os.path.join(download_folder, "playback.mp4")
     video_writer = imageio.get_writer(video_path, fps=20)
 
-    def test_agent():
+    font = ImageFont.truetype("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf", 24, encoding="unic")
+
+    def test_agent(epoch_num):
         for j in range(num_test_episodes):
             # o, d, ep_ret, ep_len = test_env.reset(), False, 0, 0
 
@@ -511,6 +544,12 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             elif env.unwrapped.has_offscreen_renderer:
                 # video_img = env.render(mode="rgb_array", height=512, width=512, camera_name="agentview")
                 video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
+
+                img = Image.fromarray(video_img)
+                video_img_editable = ImageDraw.Draw(img)
+                video_img_editable.text((15,15), f"Epoch {epoch_num}", font=font)
+                video_img = np.array(img)
+
                 video_writer.append_data(video_img)
 
             # while not(d or (ep_len == max_ep_len)):
@@ -540,17 +579,23 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 elif env.unwrapped.has_offscreen_renderer:
                     # video_img = env.render(mode="rgb_array", height=512, width=512, camera_name="agentview")
                     video_img = env.sim.render(height=512, width=512, camera_name='frontview')[::-1]
+
+                    img = Image.fromarray(video_img)
+                    video_img_editable = ImageDraw.Draw(img)
+                    video_img_editable.text((15,15), f"Test {epoch_num}", font=font)
+                    video_img = np.array(img)
+
                     video_writer.append_data(video_img)
 
             # logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
             mylogger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
             # mylogger['TestEpRet'].append(ep_ret)
             # mylogger['TestEpLen'].append(ep_len)
-            print(f"Episode return after test: {ep_ret}         Episode length: {ep_len}         End success: {d}")
+            mylogger.log(msg=f"Episode return after test: {ep_ret}         Episode length: {ep_len}         End success: {d}", color='white', write_to_file=True)
 
     
     if pretrain_on_demonstration:
-        print("Pretraining on the demonstration data")
+        mylogger.log(msg="Pretraining on the demonstration data", write_to_file=True)
         for i in range(pretrain_steps):
             # batch = replay_buffer.sample_batch(batch_size)
             # update(data=batch, timer=0)
@@ -559,13 +604,14 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 update(data=batch, timer=j)
 
             if i % 100 == 0:
-                print(f"Pretrain steps: {i}/{pretrain_steps}")
+                mylogger.log(msg=f"Pretrain steps: {i}/{pretrain_steps}", color='white', write_to_file=True)
+                mylogger.save_epoch_dict()
                 # q_scheduler.step()
                 # pi_scheduler.step()
         
         # mylogger.plot(['LossQ', 'LossPi'])
 
-    print("Prepare for interaction with the environment")
+    mylogger.log(msg="Prepare for interaction with the environment", write_to_file=True)
 
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
@@ -665,7 +711,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # Ignore the "done" signal if it comes from hitting the time
         # horizon (that is, when it's an artificial terminal signal
         # that isn't based on the agent's state)
-        d = False if ep_len==max_ep_len else d
+        # d = False if ep_len==max_ep_len else d
 
         # if d:
             # r += 100
@@ -694,7 +740,7 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             mylogger.store(EpRet=ep_ret, EpLen=ep_len)
             # mylogger['EpRet'].append(ep_ret)
             # mylogger['EpLen'].append(ep_len)
-            print(f"Episode return after interaction: {ep_ret}         Episode length: {ep_len}         End success: {d}")
+            mylogger.log(msg=f"Episode return after interaction: {ep_ret}         Episode length: {ep_len}         End success: {d}", color='white', write_to_file=True)
 
             o, ep_ret, ep_len = env.reset(), 0, 0
 
@@ -727,10 +773,12 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # End of epoch handling
         if (t+1) % steps_per_epoch == 0:
-            print(f"The size of data in the replay buffer: {replay_buffer.size}/{replay_buffer.max_size}")
+            mylogger.log(msg=f"The size of data in the replay buffer: {replay_buffer.size}/{replay_buffer.max_size}", color='white', write_to_file=True)
             epoch = (t+1) // steps_per_epoch
 
-            print(f"Epoch {epoch}")
+            mylogger.save_epoch_dict()
+
+            mylogger.log(msg=f"Epoch {epoch}", write_to_file=True)
 
             # if t > start_steps:
                 # q_scheduler.step()
@@ -738,14 +786,18 @@ def td3(env, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             # Save model
             if (epoch % save_freq == 0) or (epoch == epochs):
-                ckpt_folder = '/home/rvarga/Data/Delft/thesis/implementation/robosuite/custom/ckpt'
-                torch.save(ac.state_dict(), os.path.join(ckpt_folder, f"epoch{epoch}" + ".pth"))
+                # ckpt_folder = '/home/rvarga/Data/Delft/thesis/implementation/robosuite/custom/ckpt'
+                # torch.save(ac.state_dict(), os.path.join(ckpt_folder, f"epoch{epoch}" + ".pth"))
+                mylogger.save_network(network_state_dict=ac.state_dict(), epoch=epoch)
                 # logger.save_state({'env': env}, None)
 
-            print("Testing the agent")
+            mylogger.log(msg="Testing the agent", write_to_file=True)
+
+            if video_writer.closed:
+                video_writer = imageio.get_writer(video_path, fps=20)
 
             # Test the performance of the deterministic version of the agent.
-            test_agent()
+            test_agent(epoch_num=epoch)
 
             o, ep_ret, ep_len = env.reset(), 0, 0
 

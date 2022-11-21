@@ -39,19 +39,20 @@ from collections import OrderedDict
 
 import torch
 
+import time
 
 if __name__ == "__main__":
 
-    # expert_data_path='/home/rvarga/implementation/robomimic/custom/data/extended_low_dim_shaped.hdf5'
-    # expert_data_path='/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_shaped.hdf5'
+    # for seed in [int(22), int(15), int(96), int(0)]:
 
-    seed = 22
+    seed = 15
     
     expert_data_path = OrderedDict()
     # expert_data_path['success']='/home/rvarga/implementation/robomimic/datasets/lift/ph/low_dim_shaped_donemode0.hdf5'
     # expert_data_path['exp']='/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_shaped_donemode0.hdf5'
     expert_data_path['success']='/home/rvarga/implementation/robomimic/datasets/lift/ph/low_dim_donemode0.hdf5'
-    expert_data_path['exp']='/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_donemode0.hdf5'
+    # expert_data_path['exp']='/home/rvarga/implementation/robomimic/datasets/lift/mg/low_dim_donemode0.hdf5'
+    expert_data_path['exp']='/home/rvarga/implementation/robomimic/datasets/lift/mh/low_dim_donemode0.hdf5'
 
     render_kwargs = dict()
     render_kwargs["onscreen"] = False
@@ -63,9 +64,15 @@ if __name__ == "__main__":
     keys = ['object-state', 'robot0_gripper_qpos', 'robot0_eef_quat']
     reward_correction = None
     success_boost = 5*0
-    # target_bounds = {"lb" : 0, "ub" : 1}
-    target_bounds = {"lb" : 0}
-    do_underestimation_step = True
+    target_bounds = dict()
+    target_bounds["lb"] = 0
+    # target_bounds["ub"] = 1
+    do_underestimation_step = False
+    underest_delay = 1
+    common_loss = True
+    logger_kwargs = dict()
+    # logger_kwargs["savelocation"] = "/home/rvarga/implementation/robosuite/runs/cubelift-" + time.strftime("%Y%m%d-%H%M%S")
+    logger_kwargs["savelocation"] = "/home/rvarga/implementation/robosuite/runs/lift-" + time.strftime("%Y%m%d-%H%M%S")
 
 
     if use_encoder:
@@ -133,7 +140,7 @@ if __name__ == "__main__":
 
     td3(env, 
         max_ep_len=200, 
-        epochs=1000,
+        epochs=200,
         start_steps=0,
         steps_per_epoch=1000,
         # ac_kwargs=dict(hidden_sizes=[400, 400, 300]),
@@ -141,18 +148,18 @@ if __name__ == "__main__":
         # ac_kwargs=dict(hidden_sizes=[128, 128]),
         # ac_kwargs=dict(hidden_sizes=[84, 84]),
         ac_kwargs=dict(hidden_sizes=[64, 64]),
-        # ac_kwargs=dict(hidden_sizes=[22, 22, 22]),
+        # ac_kwargs=dict(hidden_sizes=[48, 48]),
         update_after=0,
         update_every=10,
         polyak=0.995*0+0.995,
         gamma=0.9*0+0.99,
         num_test_episodes=1, 
-        replay_size=int(1e6)*0+int(250000), 
+        replay_size=int(1e6)*0+int(250000)*0+int(1e6), 
         pretrain_on_demonstration=True, 
         pretrain_steps=4000,
         encoder=encoder,
         # batch_size=400,
-        batch_size=4000,
+        batch_size=4000*0+2000+400*0,
         force_scale=None,
         expert_data_dict=demo_data,
         expert_data_path=expert_data_path,
@@ -172,39 +179,9 @@ if __name__ == "__main__":
         success_boost=success_boost,
         seed=seed,
         target_bounds=target_bounds,
-        do_underestimation_step=do_underestimation_step)
+        do_underestimation_step=do_underestimation_step,
+        logger_kwargs=logger_kwargs,
+        underest_delay=underest_delay,
+        common_loss=common_loss)
 
     
-    # Paramset that is almost working.... 
-    #
-    # td3(env, 
-    #     max_ep_len=200, 
-    #     epochs=100,
-    #     start_steps=1000,
-    #     steps_per_epoch=1000,
-    #     ac_kwargs=dict(hidden_sizes=[400, 400, 300]),
-    #     update_after=1000,
-    #     update_every=50,
-    #     num_test_episodes=1, 
-    #     replay_size=int(1e6), 
-    #     pretrain_on_demonstration=False, 
-    #     pretrain_steps=50,
-    #     encoder=encoder,
-    #     batch_size=800,
-    #     force_scale=None,
-    #     expert_data=None,
-    #     obs_normalization_stats=obs_normalization_stats,
-    #     pi_lr=1e-4,
-    #     q_lr=1e-4,
-    #     noise_clip=0.3,
-    #     act_noise=0.1,
-    #     policy_delay=2,
-    #     render=render)
-
-    print("Starting rollout")
-
-    # rollout_data = rollout(env=env, agent=agent, max_path_length=300, render=True, render_kwargs=None)
-
-
-    # Shut down this env before starting the next test
-    # env.close()
